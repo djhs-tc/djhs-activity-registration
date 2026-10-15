@@ -2,7 +2,7 @@
 # 線上端到端驗證（只讀，不寫入任何資料）。用法：bash scripts/verify-live.sh [網址]
 set -u
 export MSYS_NO_PATHCONV=1
-BASE="${1:-https://djhs-activity-registration.lunary-02c.workers.dev}"
+BASE="${1:-https://activity.djhs.workers.dev}"
 fail=0
 STATUS='' BODY=''
 

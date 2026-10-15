@@ -2,13 +2,13 @@
 
 校務活動（講座、研習、營隊）的班級報名平台。首場活動為「自律學習力」講座。
 
-- 正式網址：https://djhs-activity-registration.lunary-02c.workers.dev （`02c` 開頭是**數字 0**）
+- 正式網址：https://activity.djhs.workers.dev （2026-10-16 起；舊網址 `djhs-activity-registration.lunary-02c.workers.dev` 已停用）
 - 目前狀態：學校 Google 帳號登入、班級報名（講座：優先錄取＋抽籤；營隊意願調查：學生名單＋男女統計＋繳費登記）、管理後台皆已上線。
 
 ## 架構
 
 ```
-瀏覽器 ──► Cloudflare Worker「djhs-activity-registration」
+瀏覽器 ──► Cloudflare Worker「activity」
             ├─ /api/*  → src/index.js（run_worker_first）──► D1「djhs-activity-db」（binding: DB）
             └─ 其他路徑 → public/ 靜態檔（binding: ASSETS）
 GitHub main 推送 ──► Cloudflare Workers Builds（deploy command: npx wrangler deploy）自動部署
@@ -82,7 +82,7 @@ GitHub main 推送 ──► Cloudflare Workers Builds（deploy command: npx wra
 登入只接受 Google Workspace 管理的學校帳號：ID token 的 `hd` 必須是 `ALLOWED_EMAIL_DOMAINS` 之一（`wrangler.jsonc`，預設 `st.tc.edu.tw,tjjh.tc.edu.tw`），個人 Gmail 一律拒絕。
 
 目前設定（2026-10-15 完成）：
-- Google Cloud 專案 `djhs-activity-registration` → Google Auth Platform：使用者類型「外部」、網頁應用程式用戶端、已授權 JavaScript 來源 `https://djhs-activity-registration.lunary-02c.workers.dev`、授權網域 `lunary-02c.workers.dev`、隱私權政策 `/privacy`。用戶端密鑰不使用，也不要提交到儲存庫。
+- Google Cloud 專案 `djhs-activity-registration` → Google Auth Platform：使用者類型「外部」、網頁應用程式用戶端、已授權 JavaScript 來源 `https://activity.djhs.workers.dev`、授權網域 `djhs.workers.dev`、隱私權政策 `/privacy`。用戶端密鑰不使用，也不要提交到儲存庫。
 - Cloudflare Worker → Settings → **Variables and Secrets**（執行時期，**不是** Build 底下的同名區塊），三筆皆為 **Secret** 類型：
 
 | 名稱 | 內容 |

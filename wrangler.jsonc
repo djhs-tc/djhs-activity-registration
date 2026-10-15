@@ -1,7 +1,10 @@
 {
   "name": "djhs-activity-registration",
   "compatibility_date": "2026-10-15",
-  "assets": {
-    "directory": "./public"
-  }
+  "assets": { "directory": "./public" },
+  "d1_databases": [{
+    "binding": "DB",
+    "database_name": "djhs-activity-db",
+    "database_id": "398040fe-bbc4-4ad1-b4cf-41c4a325c4ac"
+  }]
 }

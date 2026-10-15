@@ -11,5 +11,11 @@
     "binding": "DB",
     "database_name": "djhs-activity-db",
     "database_id": "398040fe-bbc4-4ad1-b4cf-41c4a325c4ac"
-  }]
+  }],
+  // 公開設定（Client ID 不是機密）。SESSION_SECRET、ADMIN_EMAILS 用 `wrangler secret put` 設定。
+  // 三者任一缺少時，登入功能自動停用（/api/config 回傳 authEnabled:false）。
+  "vars": {
+    "GOOGLE_CLIENT_ID": "",
+    "ALLOWED_EMAIL_DOMAINS": "st.tc.edu.tw,tjjh.tc.edu.tw"
+  }
 }

@@ -1,0 +1,7 @@
+{
+  "name": "djhs-activity-registration",
+  "compatibility_date": "2026-10-15",
+  "assets": {
+    "directory": "./public"
+  }
+}

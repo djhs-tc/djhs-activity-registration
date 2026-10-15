@@ -3,7 +3,7 @@
 校務活動（講座、研習、營隊）的班級報名平台。首場活動為「自律學習力」講座。
 
 - 正式網址：https://djhs-activity-registration.lunary-02c.workers.dev （`02c` 開頭是**數字 0**）
-- 目前狀態：**只讀**。可查看活動，Google 登入程式已部署但需完成設定；**報名、抽籤、管理寫入 API 尚未開放**。
+- 目前狀態：可查看活動、可用學校 Google 帳號登入；**報名、抽籤、管理寫入 API 尚未開放**。
 
 ## 架構
 
@@ -16,10 +16,11 @@ GitHub main 推送 ──► Cloudflare Workers Builds（deploy command: npx wra
 
 | 檔案 | 作用 |
 |---|---|
-| `wrangler.jsonc` | Worker 設定：入口、靜態資源、D1 binding、公開環境變數 |
+| `wrangler.jsonc` | Worker 設定：入口、靜態資源、D1 binding、允許登入的網域 |
 | `src/index.js` | API 路由（見下表） |
 | `src/auth.js` | Google ID token 驗證（JWKS 簽章、iss、aud、exp、nonce、email_verified、hd 網域）與 session cookie |
 | `public/index.html` | 前端：活動列表、我的報名、管理後台三分頁 |
+| `public/privacy.html` | 隱私權說明（Google 同意畫面引用） |
 | `schema.sql` | D1 完整結構（新環境建表用） |
 | `migrations/` | 已對正式 D1 執行過的結構變更紀錄 |
 | `tests/` | `npm test` 單元測試（不需安裝套件） |
@@ -43,24 +44,28 @@ GitHub main 推送 ──► Cloudflare Workers Builds（deploy command: npx wra
 ### D1 資料表
 `activities`、`registrations`（`UNIQUE(activity_id, class_code)`）、`audit_logs`，索引 `idx_reg_activity_time`、`idx_reg_email`。登入成功會寫一筆 `audit_logs`（action=`login`）。
 
-## Google 登入設定（尚待完成）
+## Google 登入設定
 
-登入只接受 Google Workspace 管理的學校帳號：ID token 的 `hd` 必須是 `ALLOWED_EMAIL_DOMAINS` 之一（預設 `st.tc.edu.tw,tjjh.tc.edu.tw`），個人 Gmail 一律拒絕。以下三項全部設定後，登入才會啟用：
+登入只接受 Google Workspace 管理的學校帳號：ID token 的 `hd` 必須是 `ALLOWED_EMAIL_DOMAINS` 之一（`wrangler.jsonc`，預設 `st.tc.edu.tw,tjjh.tc.edu.tw`），個人 Gmail 一律拒絕。
 
-1. **建立 OAuth Client**（需學校或個人 Google 帳號操作）
-   1. https://console.cloud.google.com/ 建立專案 → 「API 和服務」→「OAuth 同意畫面」：使用者類型選「外部」，填應用程式名稱與聯絡信箱，範圍只需 `openid`、`email`、`profile`。
-   2. 「憑證」→「建立憑證」→「OAuth 用戶端 ID」→ 類型「網頁應用程式」。
-   3. 「已授權的 JavaScript 來源」填 `https://djhs-activity-registration.lunary-02c.workers.dev`（不需要重新導向 URI）。
-   4. 複製「用戶端 ID」（`…apps.googleusercontent.com`）。**用戶端密鑰不需要，也不要提交到儲存庫。**
-   5. 同意畫面若在「測試」狀態，只有測試使用者能登入；正式開放前改為「發布」。
-2. **填入 Client ID**：修改 `wrangler.jsonc` 的 `vars.GOOGLE_CLIENT_ID`，推送到 GitHub。Client ID 是公開資訊。
-3. **設定機密**（不會出現在儲存庫）：
-   ```bash
-   npx wrangler secret put SESSION_SECRET   # 貼上至少 32 字元的隨機字串，例如 openssl rand -base64 48 的輸出
-   npx wrangler secret put ADMIN_EMAILS     # 例如 tjjh111@tjjh.tc.edu.tw，多位以逗號分隔
-   ```
-   也可以在 Cloudflare 控制台 → Worker → Settings → Variables and Secrets 以 **Secret** 類型新增。
-   注意：`wrangler.jsonc` 的 `vars` 會在每次部署時覆蓋控制台上同名的一般變數，所以公開設定請改檔案，機密一律用 Secret。
+目前設定（2026-10-15 完成）：
+- Google Cloud 專案 `djhs-activity-registration` → Google Auth Platform：使用者類型「外部」、網頁應用程式用戶端、已授權 JavaScript 來源 `https://djhs-activity-registration.lunary-02c.workers.dev`、授權網域 `lunary-02c.workers.dev`、隱私權政策 `/privacy`。用戶端密鑰不使用，也不要提交到儲存庫。
+- Cloudflare Worker → Settings → **Variables and Secrets**（執行時期，**不是** Build 底下的同名區塊），三筆皆為 **Secret** 類型：
+
+| 名稱 | 內容 |
+|---|---|
+| `GOOGLE_CLIENT_ID` | OAuth 用戶端 ID（`…apps.googleusercontent.com`） |
+| `SESSION_SECRET` | 至少 32 字元隨機字串 |
+| `ADMIN_EMAILS` | 管理員 Email，多位以逗號分隔 |
+
+注意事項：
+- 這三項**不要**寫進 `wrangler.jsonc` 的 `vars`：同名的 var 與 secret 會讓部署失敗；控制台上的一般 Text 變數則會在下次部署時被刪除。
+- 產生 `SESSION_SECRET`（Windows PowerShell 5.1）：
+  ```powershell
+  $b = New-Object byte[] 48; [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b); [Convert]::ToBase64String($b)
+  ```
+  更換 `SESSION_SECRET` 會讓所有人登出，可用於緊急撤銷 session。
+- Google 同意畫面在「Testing」狀態時只有測試使用者能登入，正式開放前需 Publish。
 
 ## 開發與驗證
 

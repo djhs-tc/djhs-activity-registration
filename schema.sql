@@ -16,7 +16,10 @@ CREATE TABLE IF NOT EXISTS activities (
  status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft','open','closed','drawn','archived')),
  created_by TEXT NOT NULL,
  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
- lottery_at TEXT
+ lottery_at TEXT,
+ -- lecture：講座（優先名額＋抽籤）；survey：營隊意願調查（無名額，收學生名單）
+ kind TEXT NOT NULL DEFAULT 'lecture' CHECK(kind IN ('lecture','survey')),
+ max_students_per_class INTEGER
 );
 CREATE TABLE IF NOT EXISTS registrations (
  id TEXT PRIMARY KEY,
@@ -34,6 +37,22 @@ CREATE TABLE IF NOT EXISTS registrations (
 CREATE UNIQUE INDEX IF NOT EXISTS uq_reg_active_class ON registrations(activity_id, class_code) WHERE status != 'cancelled';
 CREATE INDEX IF NOT EXISTS idx_reg_activity_time ON registrations(activity_id, submitted_at, id);
 CREATE INDEX IF NOT EXISTS idx_reg_email ON registrations(teacher_email);
+-- 意願調查的學生名單（個資：僅送出的導師與管理員可見）
+CREATE TABLE IF NOT EXISTS registration_students (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ registration_id TEXT NOT NULL REFERENCES registrations(id) ON DELETE RESTRICT,
+ seat_no INTEGER NOT NULL CHECK(seat_no BETWEEN 1 AND 60),
+ name TEXT NOT NULL,
+ gender TEXT NOT NULL CHECK(gender IN ('M','F')),
+ status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','withdrawn')),
+ withdrawn_at TEXT,
+ withdrawn_by TEXT,
+ paid INTEGER NOT NULL DEFAULT 0 CHECK(paid IN (0,1)),
+ paid_at TEXT,
+ paid_by TEXT,
+ UNIQUE(registration_id, seat_no)
+);
+CREATE INDEX IF NOT EXISTS idx_students_registration ON registration_students(registration_id);
 CREATE TABLE IF NOT EXISTS audit_logs (
  id INTEGER PRIMARY KEY AUTOINCREMENT,
  actor_email TEXT NOT NULL,

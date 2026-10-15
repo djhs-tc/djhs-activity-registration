@@ -3,7 +3,7 @@
 校務活動（講座、研習、營隊）的班級報名平台。首場活動為「自律學習力」講座。
 
 - 正式網址：https://djhs-activity-registration.lunary-02c.workers.dev （`02c` 開頭是**數字 0**）
-- 目前狀態：學校 Google 帳號登入、班級報名、管理後台（活動管理／建立活動／報名名單／抽籤作業）皆已上線。
+- 目前狀態：學校 Google 帳號登入、班級報名（講座：優先錄取＋抽籤；營隊意願調查：學生名單＋男女統計＋繳費登記）、管理後台皆已上線。
 
 ## 架構
 
@@ -40,7 +40,7 @@ GitHub main 推送 ──► Cloudflare Workers Builds（deploy command: npx wra
 | GET | `/api/auth/nonce` | 公開 | 發給一次性 nonce（HttpOnly cookie，10 分鐘） |
 | POST | `/api/auth/google` | 公開 | 以 Google ID token 登入，成功後設定 8 小時 session cookie |
 | POST | `/api/auth/logout` | 公開 | 登出 |
-| POST | `/api/registrations` | 登入 | 班級報名 `{activity_id, class_code, teacher_name, accompany: yes/no, notes}` |
+| POST | `/api/registrations` | 登入 | 班級報名 `{activity_id, class_code, teacher_name, accompany: yes/no, notes, students?}`（意願調查須附學生名單） |
 | GET | `/api/my/registrations` | 登入 | 自己送出的報名與結果 |
 | GET / POST | `/api/admin/activities` | 管理員 | 列出全部活動（含各狀態班數）／建立活動（草稿） |
 | PUT | `/api/admin/activities/:id` | 管理員 | 修改活動（抽籤前皆可；修改後依報名順序重新計算優先錄取） |
@@ -48,7 +48,10 @@ GitHub main 推送 ──► Cloudflare Workers Builds（deploy command: npx wra
 | GET | `/api/admin/activities/:id/registrations` | 管理員 | 報名名單與抽籤紀錄 |
 | GET | `/api/admin/activities/:id/registrations.csv` | 管理員 | CSV 匯出（Excel 可直接開啟，已防公式注入） |
 | POST | `/api/admin/activities/:id/registrations/:rid/cancel` | 管理員 | 取消某班報名 `{reason}` |
-| POST | `/api/admin/activities/:id/draw` | 管理員 | 執行抽籤（截止後、僅一次） |
+| POST | `/api/admin/activities/:id/draw` | 管理員 | 執行抽籤（截止後、僅一次；意願調查不適用） |
+| POST | `/api/registrations/:rid/students/:sid/withdraw` | 導師（自己的報名、截止前）／管理員 | 意願調查：標記學生不參加 |
+| POST | `/api/admin/registrations/:rid/students/:sid/restore` | 管理員 | 恢復學生為參加 |
+| POST | `/api/admin/registrations/:rid/students/:sid/paid` | 管理員 | 登記繳費 `{paid: true/false}` |
 
 所有 POST／PUT 必須同源（`Origin` 檢查）且為 `application/json`，否則回 403／415。所有時間以 UTC ISO 字串儲存，畫面與輸入一律為臺灣時間（UTC+8）。
 
@@ -62,10 +65,17 @@ GitHub main 推送 ──► Cloudflare Workers Builds（deploy command: npx wra
   - **修改名額**：依同一規則重新計算；調低名額時，較晚報名的優先錄取班級會改為抽籤候選（畫面會先確認）。
   - 每次狀態異動都寫入 `priority_recompute` 稽核紀錄（班級、原狀態、新狀態）。
   - 抽籤後取消不會重新計算，名額異動由管理員人工處理。
-- 稽核紀錄 `audit_logs`：`login`、`activity_create`、`activity_update`（含修改前後）、`activity_status`、`register`、`registration_cancel`、`priority_recompute`、`lottery_draw`。
+- 稽核紀錄 `audit_logs`：`login`、`activity_create`、`activity_update`（含修改前後）、`activity_status`、`register`、`registration_cancel`、`priority_recompute`、`lottery_draw`、`student_withdraw`、`student_restore`、`student_paid`、`student_unpaid`。
+
+### 營隊意願調查（`kind = survey`）
+- 建立活動時選擇類型，**建立後不可變更**。沒有名額與抽籤，班級報名狀態為「已登記」；每班人數上限由管理員設定（1–60，抽籤前可修改）。
+- 導師報名時填學生名單（座號、姓名、性別），可從 Excel 直接複製三欄貼上，送出前預覽並顯示男女人數。人數一律由名單加總，不另外填寫。
+- 送出後**不能新增學生**；送出的導師在**報名截止前**可把個別學生標記為「不參加」，截止後只有管理員可調整。管理員可恢復參加、登記繳費，並可取消整班（取消後該班可重新報名）。
+- 管理後台「報名名單」顯示各年級 × 男女人數統計與已繳費人數，CSV 一位學生一列，供收費對帳。
+- 個資：學生名單只有送出的導師本人與管理員可見；公開 API 只回傳班數與男女總數。
 
 ### D1 資料表
-`activities`、`registrations`（部分唯一索引 `uq_reg_active_class`：同活動同班級僅一筆未取消報名）、`audit_logs`，索引 `idx_reg_activity_time`、`idx_reg_email`。結構變更見 `migrations/`。
+`activities`（`kind`：`lecture` 講座／`survey` 營隊意願調查；`max_students_per_class`）、`registrations`（部分唯一索引 `uq_reg_active_class`：同活動同班級僅一筆未取消報名）、`registration_students`（意願調查學生名單：座號、姓名、性別、參加／不參加、繳費）、`audit_logs`。結構變更見 `migrations/`（依序執行，0003 須在部署讀取 `kind` 的程式之前完成）。
 
 ## Google 登入設定
 
@@ -110,7 +120,7 @@ npx wrangler dev --local
 
 ## 上線前測試清單
 
-- [x] `npm test` 全部通過（36 項）
+- [x] `npm test` 全部通過（43 項，含營隊意願調查）
 - [x] 本機 `wrangler dev` 端到端：草稿不可報名、優先名額、重複報名、取消、截止前不可抽籤、截止後不可報名、同時抽籤僅一次成功、稽核紀錄筆數正確
 - [x] `@st.tc.edu.tw`、`@tjjh.tc.edu.tw` 帳號可登入；個人 Gmail 被拒絕；`audit_logs` 有 login 紀錄
 - [ ] `scripts/verify-live.sh` 全部 PASS（每次部署後）

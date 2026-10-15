@@ -6,7 +6,8 @@ import { HttpError, json, readJson, nowIso } from './http.js';
 import {
   listPublicActivities, validateRegistration, register, listMyRegistrations,
   validateActivity, createActivity, updateActivity, setActivityStatus, getActivity, listAdminActivities,
-  listRegistrations, cancelRegistration, drawLottery, toCsv
+  listRegistrations, cancelRegistration, drawLottery, toCsv, toStudentsCsv,
+  withdrawStudent, restoreStudent, setStudentPaid
 } from './activities.js';
 
 export default {
@@ -35,6 +36,7 @@ export default {
 };
 
 const ID = '([0-9a-f-]{36})';
+const SID = '(\\d{1,10})';
 const ROUTES = [
   ['GET', /^\/api\/health$/, health],
   ['GET', /^\/api\/activities$/, publicActivities],
@@ -46,6 +48,7 @@ const ROUTES = [
   // 教師
   ['POST', /^\/api\/registrations$/, createRegistration],
   ['GET', /^\/api\/my\/registrations$/, myRegistrations],
+  ['POST', new RegExp(`^/api/registrations/${ID}/students/${SID}/withdraw$`), studentWithdraw],
   // 管理員
   ['GET', /^\/api\/admin\/activities$/, adminListActivities],
   ['POST', /^\/api\/admin\/activities$/, adminCreateActivity],
@@ -54,7 +57,9 @@ const ROUTES = [
   ['GET', new RegExp(`^/api/admin/activities/${ID}/registrations$`), adminRegistrations],
   ['GET', new RegExp(`^/api/admin/activities/${ID}/registrations\\.csv$`), adminRegistrationsCsv],
   ['POST', new RegExp(`^/api/admin/activities/${ID}/registrations/${ID}/cancel$`), adminCancelRegistration],
-  ['POST', new RegExp(`^/api/admin/activities/${ID}/draw$`), adminDraw]
+  ['POST', new RegExp(`^/api/admin/activities/${ID}/draw$`), adminDraw],
+  ['POST', new RegExp(`^/api/admin/registrations/${ID}/students/${SID}/restore$`), adminStudentRestore],
+  ['POST', new RegExp(`^/api/admin/registrations/${ID}/students/${SID}/paid$`), adminStudentPaid]
 ];
 
 // ---------- 身分 ----------
@@ -152,6 +157,14 @@ async function myRegistrations({ request, env }) {
   return json({ registrations: await listMyRegistrations(requireDb(env), user.email) });
 }
 
+// 導師（截止前、限自己送出的報名）或管理員：標記學生不參加
+async function studentWithdraw({ request, env, params }) {
+  const user = await requireUser(request, env);
+  await readJson(request);
+  await withdrawStudent(requireDb(env), user, params[0], params[1]);
+  return json({ ok: true });
+}
+
 // ---------- 管理員 ----------
 async function adminListActivities({ request, env }) {
   await requireAdmin(request, env);
@@ -193,8 +206,10 @@ async function adminRegistrationsCsv({ request, env, params }) {
   const db = requireDb(env);
   const activity = await getActivity(db, params[0]);
   if (!activity) throw new HttpError(404, '找不到此活動');
-  const filename = encodeURIComponent(`${activity.title}-報名名單.csv`);
-  return new Response(toCsv(await listRegistrations(db, params[0])), {
+  const survey = activity.kind === 'survey';
+  const filename = encodeURIComponent(`${activity.title}-${survey ? '學生名單' : '報名名單'}.csv`);
+  const rows = await listRegistrations(db, params[0]);
+  return new Response(survey ? toStudentsCsv(rows) : toCsv(rows), {
     headers: {
       'content-type': 'text/csv; charset=utf-8',
       'content-disposition': `attachment; filename="registrations.csv"; filename*=UTF-8''${filename}`,
@@ -215,6 +230,21 @@ async function adminDraw({ request, env, params }) {
   const admin = await requireAdmin(request, env);
   await readJson(request);
   return json({ result: await drawLottery(requireDb(env), admin, params[0]) });
+}
+
+async function adminStudentRestore({ request, env, params }) {
+  const admin = await requireAdmin(request, env);
+  await readJson(request);
+  await restoreStudent(requireDb(env), admin, params[0], params[1]);
+  return json({ ok: true });
+}
+
+async function adminStudentPaid({ request, env, params }) {
+  const admin = await requireAdmin(request, env);
+  const { paid } = await readJson(request);
+  if (typeof paid !== 'boolean') throw new HttpError(400, 'paid 必須為 true 或 false');
+  await setStudentPaid(requireDb(env), admin, params[0], params[1], paid);
+  return json({ ok: true });
 }
 
 // 寫入類請求只接受同源 JSON，避免跨站請求偽造。

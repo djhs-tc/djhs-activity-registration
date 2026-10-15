@@ -42,7 +42,8 @@ export function authConfig(env) {
   };
 }
 function splitList(v) {
-  return String(v || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+  // 容許全形逗號、頓號、分號與空白，避免在控制台輸入時分隔符號打錯導致設定失效。
+  return String(v || '').split(/[\s,，、;；]+/).map(s => s.trim().toLowerCase()).filter(Boolean);
 }
 
 // --- Google ID token ---

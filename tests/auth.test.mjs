@@ -139,3 +139,11 @@ test('malformed client ID (e.g. a pasted secret) is never exposed and disables a
   const same = { ...baseEnv, GOOGLE_CLIENT_ID: CLIENT_ID, SESSION_SECRET: CLIENT_ID };
   assert.equal((await (await call('/api/config', {}, same)).json()).authEnabled, false);
 });
+
+test('ADMIN_EMAILS accepts full-width and mixed separators', async () => {
+  const env = { ...baseEnv, GOOGLE_CLIENT_ID: CLIENT_ID, SESSION_SECRET: SECRET, ADMIN_EMAILS: 'lunary@st.tc.edu.tw，TJJH111@tjjh.tc.edu.tw；a@st.tc.edu.tw、 b@st.tc.edu.tw' };
+  for (const email of ['tjjh111@tjjh.tc.edu.tw', 'lunary@st.tc.edu.tw', 'a@st.tc.edu.tw', 'b@st.tc.edu.tw']) {
+    const cookie = '__Host-djhs_session=' + await signSession({ email, name: 'n' }, SECRET);
+    assert.equal((await (await call('/api/me', { headers: { cookie } }, env)).json()).user.isAdmin, true, email);
+  }
+});

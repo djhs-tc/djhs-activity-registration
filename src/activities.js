@@ -122,20 +122,48 @@ export async function createActivity(db, admin, a) {
   return getActivity(db, id);
 }
 
-// 只有草稿可以修改，避免開放後改動名額或期限造成爭議。
+// 抽籤前隨時可修改（含開放後）；抽籤後時間與名額已用於公布結果，不可再改。
+// 修改後依報名順序重新計算優先錄取（名額調整會影響哪些班級是 priority）。
 export async function updateActivity(db, admin, id, a) {
+  const before = await getActivity(db, id);
+  if (!before) throw new HttpError(404, '找不到此活動');
+  if (before.lottery_at || !EDITABLE.includes(before.status)) throw new HttpError(409, '已抽籤或已封存的活動不可修改');
   const [res] = await db.batch([
     db.prepare(
       `UPDATE activities SET title=?2, speaker=?3, venue=?4, audience=?5, description=?6, starts_at=?7, ends_at=?8, opens_at=?9, deadline_at=?10, priority_quota=?11, lottery_quota=?12
-       WHERE id = ?1 AND status = 'draft'`
+       WHERE id = ?1 AND status IN ('draft','open','closed') AND lottery_at IS NULL`
     ).bind(id, a.title, a.speaker, a.venue, a.audience, a.description, a.starts_at, a.ends_at, a.opens_at, a.deadline_at, a.priority_quota, a.lottery_quota),
     db.prepare(
-      `INSERT INTO audit_logs (actor_email, action, activity_id, details_json)
-       SELECT ?1, 'activity_update', id, ?3 FROM activities WHERE id = ?2 AND status = 'draft'`
-    ).bind(admin.email, id, JSON.stringify(a))
+      `INSERT INTO audit_logs (actor_email, action, activity_id, details_json) SELECT ?1, 'activity_update', ?2, ?3 WHERE changes() = 1`
+    ).bind(admin.email, id, JSON.stringify({ before: pick(before), after: a })),
+    ...recomputePriority(db, id, admin.email, 'activity_update')
   ]);
-  if (!res.meta.changes) throw new HttpError(409, '只有草稿狀態的活動可以修改');
+  if (!res.meta.changes) throw new HttpError(409, '已抽籤或已封存的活動不可修改');
   return getActivity(db, id);
+}
+const EDITABLE = ['draft', 'open', 'closed'];
+const pick = r => Object.fromEntries(['title', 'speaker', 'venue', 'audience', 'description', 'starts_at', 'ends_at', 'opens_at', 'deadline_at', 'priority_quota', 'lottery_quota'].map(k => [k, r[k]]));
+
+// 抽籤前的單一規則：有效報名（priority + lottery_pool）依送出時間排序，前 N 班為 priority，其餘為 lottery_pool。
+// 回傳兩個敘述，放進同一個 batch（交易）：先記錄將變動的班級，再更新狀態。
+const RANKED = `SELECT r.id, r.class_code, r.status,
+    CASE WHEN ROW_NUMBER() OVER (ORDER BY r.submitted_at, r.rowid) <= a.priority_quota THEN 'priority' ELSE 'lottery_pool' END AS new_status
+  FROM registrations r JOIN activities a ON a.id = r.activity_id
+  WHERE r.activity_id = ?1 AND a.lottery_at IS NULL AND r.status IN ('priority','lottery_pool')`;
+function recomputePriority(db, activityId, actor, reason) {
+  return [
+    db.prepare(
+      `INSERT INTO audit_logs (actor_email, action, activity_id, details_json)
+       SELECT ?2, 'priority_recompute', ?1, json_object('reason', ?3, 'changes', json(ch)) FROM (
+         SELECT json_group_array(json_object('class_code', class_code, 'from', status, 'to', new_status)) AS ch, COUNT(*) AS n
+         FROM (${RANKED}) WHERE status != new_status
+       ) WHERE n > 0`
+    ).bind(activityId, actor, reason),
+    db.prepare(
+      `UPDATE registrations SET status = x.new_status FROM (${RANKED}) AS x
+       WHERE registrations.id = x.id AND registrations.status != x.new_status`
+    ).bind(activityId)
+  ];
 }
 
 const TRANSITIONS = { draft: ['open', 'archived'], open: ['closed'], closed: ['open', 'archived'], drawn: ['archived'], archived: [] };
@@ -180,7 +208,8 @@ export async function listRegistrations(db, activityId) {
   return results || [];
 }
 
-// 取消不會自動遞補，名額異動由管理員人工處理（見 README）。
+// 抽籤前取消：抽籤候選中最早報名者自動遞補為優先錄取；被取消的班級可重新報名（排在最後）。
+// 抽籤後取消：不重新計算，名額異動由管理員人工處理。
 export async function cancelRegistration(db, admin, activityId, registrationId, reason) {
   const [res] = await db.batch([
     db.prepare(`UPDATE registrations SET status = 'cancelled' WHERE id = ?1 AND activity_id = ?2 AND status != 'cancelled'`).bind(registrationId, activityId),
@@ -188,7 +217,8 @@ export async function cancelRegistration(db, admin, activityId, registrationId, 
       `INSERT INTO audit_logs (actor_email, action, activity_id, details_json)
        SELECT ?1, 'registration_cancel', activity_id, json_object('registration_id', id, 'class_code', class_code, 'reason', ?3)
        FROM registrations WHERE id = ?2 AND activity_id = ?4 AND status = 'cancelled' AND changes() = 1`
-    ).bind(admin.email, registrationId, String(reason || '').slice(0, 200), activityId)
+    ).bind(admin.email, registrationId, String(reason || '').slice(0, 200), activityId),
+    ...recomputePriority(db, activityId, admin.email, 'registration_cancel')
   ]);
   if (!res.meta.changes) throw new HttpError(404, '找不到此報名或已取消');
 }

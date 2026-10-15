@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { createD1 } from './d1-shim.mjs';
 import { signSession } from '../src/auth.js';
 import { taipeiToUtcIso } from '../src/http.js';
-import { register, drawLottery, rankPool, toCsv, validateActivity, listRegistrations } from '../src/activities.js';
+import { register, drawLottery, rankPool, toCsv, validateActivity, listRegistrations, cancelRegistration, updateActivity } from '../src/activities.js';
 import worker from '../src/index.js';
 
 const CLIENT_ID = '123456789-abcdef.apps.googleusercontent.com';
@@ -85,7 +85,7 @@ test('permissions: anonymous 401, teacher 403 on admin APIs, cross-site 403', as
   assert.equal((await call(`/api/admin/activities/${id}/registrations.csv`, { as: teacher(1) })).status, 403);
 });
 
-test('draft activity is hidden and not open for registration; only drafts are editable', async () => {
+test('draft activity is hidden and not open for registration; editable after opening', async () => {
   const { call } = setup();
   const created = await call('/api/admin/activities', { method: 'POST', body: activityBody(), as: ADMIN });
   const id = created.data.activity.id;
@@ -95,7 +95,10 @@ test('draft activity is hidden and not open for registration; only drafts are ed
   assert.equal((await call('/api/registrations', { method: 'POST', body: reg(id, '701'), as: teacher(1) })).status, 404);
   assert.equal((await call(`/api/admin/activities/${id}`, { method: 'PUT', body: activityBody({ title: '改名' }), as: ADMIN })).data.activity.title, '改名');
   await call(`/api/admin/activities/${id}/status`, { method: 'POST', body: { status: 'open' }, as: ADMIN });
-  assert.equal((await call(`/api/admin/activities/${id}`, { method: 'PUT', body: activityBody(), as: ADMIN })).status, 409);
+  const edited = await call(`/api/admin/activities/${id}`, { method: 'PUT', body: activityBody({ venue: '大禮堂' }), as: ADMIN });
+  assert.equal(edited.status, 200);
+  assert.equal(edited.data.activity.venue, '大禮堂');
+  assert.equal(edited.data.activity.status, 'open');
   assert.equal((await call(`/api/admin/activities/${id}/status`, { method: 'POST', body: { status: 'drawn' }, as: ADMIN })).status, 409);
   assert.equal((await call('/api/activities')).data.activities.length, 1);
 });
@@ -234,14 +237,73 @@ test('admin cancel, registration list, CSV export with formula escaping', async 
   assert.match(csv.data, /"含,逗號"/);
   assert.equal((await call(`/api/admin/activities/${id}/registrations/${rid}/cancel`, { method: 'POST', body: { reason: '誤報' }, as: ADMIN })).status, 200);
   assert.equal((await call(`/api/admin/activities/${id}/registrations/${rid}/cancel`, { method: 'POST', body: {}, as: ADMIN })).status, 404);
-  // 取消後空出優先名額：下一班取得 priority；同班不可重報（UNIQUE）
-  assert.equal((await call('/api/registrations', { method: 'POST', body: reg(id, '701'), as: teacher(2) })).status, 409);
+  // 被取消的班級可以重新報名
+  assert.equal((await call('/api/registrations', { method: 'POST', body: reg(id, '701'), as: teacher(2) })).status, 201);
+  assert.equal((await call('/api/registrations', { method: 'POST', body: reg(id, '701'), as: teacher(3) })).status, 409);
   const actions = DB.raw.prepare('SELECT action FROM audit_logs ORDER BY id').all().map(x => x.action);
-  assert.deepEqual(actions, ['activity_create', 'activity_status', 'register', 'registration_cancel']);
+  assert.deepEqual(actions, ['activity_create', 'activity_status', 'register', 'registration_cancel', 'register']);
 });
 
 test('csv helper', () => {
   const out = toCsv([{ class_code: '701', teacher_name: '+cmd', teacher_email: 'a@b', accompany: 'no', status: 'priority', draw_rank: null, submitted_at: '2026-10-16T00:00:01.000Z', notes: 'a\nb' }]);
   assert.ok(out.startsWith('﻿順序,班級'));
   assert.match(out, /1,701,'\+cmd,a@b,否,優先錄取,,2026-10-16 08:00:01,"a\nb"/);
+});
+
+// ---------- 取消遞補、重新報名、修改名額 ----------
+async function seeded(quota = 2, n = 4) {
+  const DB = createD1();
+  DB.raw.prepare(`INSERT INTO activities (id,title,starts_at,ends_at,opens_at,deadline_at,priority_quota,lottery_quota,status,created_by)
+    VALUES ('A','t','2026-11-12T06:00:00.000Z','2026-11-12T08:00:00.000Z','2026-10-16T00:00:00.000Z','2026-11-06T04:00:00.000Z',?,1,'open','x')`).run(quota);
+  for (let i = 1; i <= n; i++) {
+    await register(DB, { email: teacher(i) }, { activityId: 'A', classCode: String(700 + i), teacherName: 'n', accompany: 'no', notes: '' }, `2026-10-20T00:00:0${i}.000Z`);
+  }
+  const status = () => Object.fromEntries(DB.raw.prepare(`SELECT class_code, status FROM registrations WHERE status != 'cancelled' ORDER BY submitted_at`).all().map(r => [r.class_code, r.status]));
+  const idOf = c => DB.raw.prepare(`SELECT id FROM registrations WHERE class_code = ? AND status != 'cancelled'`).get(c).id;
+  return { DB, status, idOf };
+}
+const admin = { email: ADMIN };
+const editBody = over => ({ title: 't', speaker: '', venue: '', audience: '', description: '',
+  starts_date: '2026-11-12', starts_time: '14:00', ends_date: '2026-11-12', ends_time: '16:00',
+  opens_date: '2026-10-16', opens_time: '08:00', deadline_date: '2026-11-06', deadline_time: '12:00',
+  priority_quota: 2, lottery_quota: 1, ...over });
+
+
+test('cancel → earliest pool entry promoted; cancelled class may re-register at the end', async () => {
+  const { DB, status, idOf } = await seeded(2, 4);
+  assert.deepEqual(status(), { 701: 'priority', 702: 'priority', 703: 'lottery_pool', 704: 'lottery_pool' });
+  await cancelRegistration(DB, admin, 'A', idOf('701'), '測試');
+  assert.deepEqual(status(), { 702: 'priority', 703: 'priority', 704: 'lottery_pool' });
+  const again = await register(DB, { email: teacher(1) }, { activityId: 'A', classCode: '701', teacherName: 'n', accompany: 'no', notes: '' }, '2026-10-21T00:00:00.000Z');
+  assert.equal(again.status, 'lottery_pool');
+  assert.deepEqual(status(), { 702: 'priority', 703: 'priority', 704: 'lottery_pool', 701: 'lottery_pool' });
+  await assert.rejects(register(DB, { email: teacher(9) }, { activityId: 'A', classCode: '701', teacherName: 'n', accompany: 'no', notes: '' }, '2026-10-21T00:00:01.000Z'), /已經報名/);
+  const log = JSON.parse(DB.raw.prepare(`SELECT details_json FROM audit_logs WHERE action='priority_recompute'`).get().details_json);
+  assert.deepEqual(log, { reason: 'registration_cancel', changes: [{ class_code: '703', from: 'lottery_pool', to: 'priority' }] });
+});
+
+test('editing quota after opening recomputes by submission order', async () => {
+  const { DB, status } = await seeded(2, 5);
+  await updateActivity(DB, admin, 'A', validateActivity(editBody({ priority_quota: 4 })));
+  assert.deepEqual(status(), { 701: 'priority', 702: 'priority', 703: 'priority', 704: 'priority', 705: 'lottery_pool' });
+  await updateActivity(DB, admin, 'A', validateActivity(editBody({ priority_quota: 1, venue: '禮堂' })));
+  assert.deepEqual(status(), { 701: 'priority', 702: 'lottery_pool', 703: 'lottery_pool', 704: 'lottery_pool', 705: 'lottery_pool' });
+  // 只改文字不會產生狀態異動紀錄
+  const before = DB.raw.prepare(`SELECT COUNT(*) n FROM audit_logs WHERE action='priority_recompute'`).get().n;
+  await updateActivity(DB, admin, 'A', validateActivity(editBody({ priority_quota: 1, venue: '大禮堂' })));
+  assert.equal(DB.raw.prepare(`SELECT COUNT(*) n FROM audit_logs WHERE action='priority_recompute'`).get().n, before);
+  const upd = JSON.parse(DB.raw.prepare(`SELECT details_json FROM audit_logs WHERE action='activity_update' ORDER BY id DESC`).get().details_json);
+  assert.equal(upd.before.venue, '禮堂');
+  assert.equal(upd.after.venue, '大禮堂');
+});
+
+test('after the lottery, activity cannot be edited and cancel does not reshuffle', async () => {
+  const { DB, status, idOf } = await seeded(2, 4);
+  await drawLottery(DB, admin, 'A', '2026-11-07T00:00:00.000Z', new Uint8Array(32).fill(1));
+  await assert.rejects(updateActivity(DB, admin, 'A', validateActivity(editBody({ priority_quota: 3 }))), /不可修改/);
+  const before = status();
+  await cancelRegistration(DB, admin, 'A', idOf('701'), 'x');
+  const after = status();
+  delete before['701'];
+  assert.deepEqual(after, before);
 });

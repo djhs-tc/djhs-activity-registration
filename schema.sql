@@ -28,9 +28,10 @@ CREATE TABLE IF NOT EXISTS registrations (
  notes TEXT NOT NULL DEFAULT '',
  status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('priority','lottery_pool','selected','not_selected','cancelled','pending')),
  submitted_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
- draw_rank INTEGER,
- UNIQUE(activity_id, class_code)
+ draw_rank INTEGER
 );
+-- 同一活動同一班級只能有一筆「未取消」的報名；取消後可重新報名。
+CREATE UNIQUE INDEX IF NOT EXISTS uq_reg_active_class ON registrations(activity_id, class_code) WHERE status != 'cancelled';
 CREATE INDEX IF NOT EXISTS idx_reg_activity_time ON registrations(activity_id, submitted_at, id);
 CREATE INDEX IF NOT EXISTS idx_reg_email ON registrations(teacher_email);
 CREATE TABLE IF NOT EXISTS audit_logs (

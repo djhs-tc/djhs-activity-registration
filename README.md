@@ -43,7 +43,7 @@ GitHub main 推送 ──► Cloudflare Workers Builds（deploy command: npx wra
 | POST | `/api/registrations` | 登入 | 班級報名 `{activity_id, class_code, teacher_name, accompany: yes/no, notes}` |
 | GET | `/api/my/registrations` | 登入 | 自己送出的報名與結果 |
 | GET / POST | `/api/admin/activities` | 管理員 | 列出全部活動（含各狀態班數）／建立活動（草稿） |
-| PUT | `/api/admin/activities/:id` | 管理員 | 修改活動（僅限草稿） |
+| PUT | `/api/admin/activities/:id` | 管理員 | 修改活動（抽籤前皆可；修改後依報名順序重新計算優先錄取） |
 | POST | `/api/admin/activities/:id/status` | 管理員 | 狀態轉換：草稿→開放、開放→關閉、關閉→開放、草稿／關閉／已抽籤→封存 |
 | GET | `/api/admin/activities/:id/registrations` | 管理員 | 報名名單與抽籤紀錄 |
 | GET | `/api/admin/activities/:id/registrations.csv` | 管理員 | CSV 匯出（Excel 可直接開啟，已防公式注入） |
@@ -53,15 +53,19 @@ GitHub main 推送 ──► Cloudflare Workers Builds（deploy command: npx wra
 所有 POST／PUT 必須同源（`Origin` 檢查）且為 `application/json`，否則回 403／415。所有時間以 UTC ISO 字串儲存，畫面與輸入一律為臺灣時間（UTC+8）。
 
 ### 報名與抽籤規則
-- 活動建立後為**草稿**，僅草稿可修改；管理員按「開放報名」後，教師才能在「開放報名」到「報名截止」之間報名（以伺服器時間為準）。
-- 班級代碼為年級 7–9 加班號 01–30（如 `701`）；同一活動同一班級只能報名一次（`UNIQUE(activity_id, class_code)`）。
+- 活動建立後為**草稿**；管理員按「開放報名」後，教師才能在「開放報名」到「報名截止」之間報名（以伺服器時間為準）。**抽籤前**（含開放後）活動內容、時間與名額都可以修改；抽籤後鎖定。
+- 班級代碼為年級 7–9 加班號 01–30（如 `701`）；同一活動同一班級只能有**一筆未取消**的報名（部分唯一索引 `uq_reg_active_class`）。
 - **優先錄取**：報名寫入時以單一 SQL 敘述（`INSERT … SELECT`，D1 對同一資料庫序列化寫入）計算目前有效報名數，未滿優先名額即為 `priority`，否則為 `lottery_pool`。同時送出也不會超額。
 - **抽籤**：截止後由管理員執行一次。產生 32 bytes 隨機種子，候選班級依 `HMAC-SHA256(種子, 報名 id)` 由小到大排序，取前 N 班為 `selected`，其餘 `not_selected`。種子、候選名單、排序鍵與結果寫入 `audit_logs`，可重算驗證；重複執行（含同時按兩次）只有一次會成功。
-- **取消**：只能由管理員取消並填寫原因；取消**不會自動遞補**，被取消的班級也**不能重新報名**（受 UNIQUE 限制），需要時由管理員人工處理。
-- 稽核紀錄 `audit_logs`：`login`、`activity_create`、`activity_update`、`activity_status`、`register`、`registration_cancel`、`lottery_draw`。
+- **抽籤前的單一規則**：有效報名（優先錄取＋抽籤候選）依送出時間排序，前 N 班為優先錄取。因此：
+  - **取消**：只能由管理員取消並填寫原因；抽籤候選中最早報名的班級**自動遞補**為優先錄取。被取消的班級**可以重新報名**，排在最後。
+  - **修改名額**：依同一規則重新計算；調低名額時，較晚報名的優先錄取班級會改為抽籤候選（畫面會先確認）。
+  - 每次狀態異動都寫入 `priority_recompute` 稽核紀錄（班級、原狀態、新狀態）。
+  - 抽籤後取消不會重新計算，名額異動由管理員人工處理。
+- 稽核紀錄 `audit_logs`：`login`、`activity_create`、`activity_update`（含修改前後）、`activity_status`、`register`、`registration_cancel`、`priority_recompute`、`lottery_draw`。
 
 ### D1 資料表
-`activities`、`registrations`（`UNIQUE(activity_id, class_code)`）、`audit_logs`，索引 `idx_reg_activity_time`、`idx_reg_email`。登入成功會寫一筆 `audit_logs`（action=`login`）。
+`activities`、`registrations`（部分唯一索引 `uq_reg_active_class`：同活動同班級僅一筆未取消報名）、`audit_logs`，索引 `idx_reg_activity_time`、`idx_reg_email`。結構變更見 `migrations/`。
 
 ## Google 登入設定
 
@@ -106,7 +110,7 @@ npx wrangler dev --local
 
 ## 上線前測試清單
 
-- [x] `npm test` 全部通過（33 項）
+- [x] `npm test` 全部通過（36 項）
 - [x] 本機 `wrangler dev` 端到端：草稿不可報名、優先名額、重複報名、取消、截止前不可抽籤、截止後不可報名、同時抽籤僅一次成功、稽核紀錄筆數正確
 - [x] `@st.tc.edu.tw`、`@tjjh.tc.edu.tw` 帳號可登入；個人 Gmail 被拒絕；`audit_logs` 有 login 紀錄
 - [ ] `scripts/verify-live.sh` 全部 PASS（每次部署後）
@@ -120,5 +124,5 @@ npx wrangler dev --local
 ## 安全注意事項
 - 儲存庫是**公開**的：不提交 client secret、session secret、token、資料庫匯出或教師個資。
 - 所有寫入 API 都在後端驗證 session；管理 API 另驗證 `ADMIN_EMAILS`。
-- 取消後無法重新報名、也不自動遞補（見「報名與抽籤規則」）；若未來需要，需調整 UNIQUE 限制與遞補規則。
+- 取消可遞補、可重新報名；抽籤後鎖定活動時間與名額（見「報名與抽籤規則」）。
 - 舊 Google 試算表資料未與 D1 同步，勿刪除。

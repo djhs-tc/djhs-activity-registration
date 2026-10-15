@@ -25,8 +25,12 @@ export function b64urlDecode(str) {
 
 export class AuthError extends Error {}
 
+const CLIENT_ID_PATTERN = /^\d+-[a-z0-9]+\.apps\.googleusercontent\.com$/;
+
 export function authConfig(env) {
-  const clientId = String(env.GOOGLE_CLIENT_ID || '').trim();
+  const rawClientId = String(env.GOOGLE_CLIENT_ID || '').trim();
+  // Client ID 會公開給前端；格式不符（例如誤貼成其他機密）時一律不公開並停用登入。
+  const clientId = CLIENT_ID_PATTERN.test(rawClientId) ? rawClientId : '';
   const secret = String(env.SESSION_SECRET || '');
   const domains = splitList(env.ALLOWED_EMAIL_DOMAINS);
   return {
@@ -34,7 +38,7 @@ export function authConfig(env) {
     secret,
     domains,
     admins: splitList(env.ADMIN_EMAILS),
-    enabled: Boolean(clientId && secret.length >= 32 && domains.length)
+    enabled: Boolean(clientId && secret.length >= 32 && secret !== rawClientId && domains.length)
   };
 }
 function splitList(v) {

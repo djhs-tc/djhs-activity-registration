@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { verifyGoogleIdToken, signSession, readSession, b64urlEncode, resetJwksCache, AuthError, getCookie } from '../src/auth.js';
 import worker from '../src/index.js';
 
-const CLIENT_ID = 'test-client.apps.googleusercontent.com';
+const CLIENT_ID = '123456789-abcdef.apps.googleusercontent.com';
 const DOMAINS = ['st.tc.edu.tw', 'tjjh.tc.edu.tw'];
 const SECRET = 'x'.repeat(40);
 const enc = new TextEncoder();
@@ -131,4 +131,11 @@ test('full login flow sets session cookie and clears nonce', async () => {
       headers: { origin: 'https://djhs.test', 'content-type': 'application/json', cookie: '__Host-djhs_nonce=zzz' } }, env);
     assert.equal(replay.status, 401);
   } finally { globalThis.fetch = realFetch; }
+});
+
+test('malformed client ID (e.g. a pasted secret) is never exposed and disables auth', async () => {
+  const env = { ...baseEnv, GOOGLE_CLIENT_ID: 'eGc1oU/OL6WTGs6Xq7AzWeQhUkM+abc', SESSION_SECRET: SECRET };
+  assert.deepEqual(await (await call('/api/config', {}, env)).json(), { authEnabled: false, googleClientId: '', registrationEnabled: false });
+  const same = { ...baseEnv, GOOGLE_CLIENT_ID: CLIENT_ID, SESSION_SECRET: CLIENT_ID };
+  assert.equal((await (await call('/api/config', {}, same)).json()).authEnabled, false);
 });

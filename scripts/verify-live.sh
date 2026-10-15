@@ -33,6 +33,10 @@ req -X POST -H 'content-type: application/json' -H 'origin: https://evil.example
 check "跨站 POST /api/auth/google → 403" 403
 req -X POST -H 'content-type: application/json' -H "origin: $BASE" -d '{"credential":"x.y.z"}' "$BASE/api/auth/google"
 if [ $auth_enabled = 1 ]; then check "偽造 token → 401" 401; else check "登入未設定 → 503" 503; fi
+req -X POST -H 'content-type: application/json' -H "origin: $BASE" -d '{}' "$BASE/api/registrations"
+check "未登入報名 → 401" 401
+req "$BASE/api/admin/activities"; check "未登入管理 API → 401" 401
+req "$BASE/api/my/registrations"; check "未登入我的報名 → 401" 401
 req "$BASE/";                 check "GET / → 200 首頁" 200 '活動報名平台'
 for p in config.js package.json src/index.js wrangler.jsonc schema.sql gas/Code.gs; do
   req "$BASE/$p"

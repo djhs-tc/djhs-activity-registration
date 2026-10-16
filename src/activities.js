@@ -1,6 +1,6 @@
 import { HttpError, taipeiToUtcIso, nowIso } from './http.js';
 
-const ACTIVITY_COLUMNS = 'id, title, speaker, venue, audience, description, starts_at, ends_at, opens_at, deadline_at, priority_quota, lottery_quota, status, lottery_at, kind, max_students_per_class, organizer_name';
+const ACTIVITY_COLUMNS = 'id, title, speaker, venue, audience, description, starts_at, ends_at, opens_at, deadline_at, priority_quota, lottery_quota, status, lottery_at, kind, max_students_per_class, organizer_name, cancelled_at, cancel_reason';
 const ACTIVE = "status != 'cancelled'";
 // 班級代碼：年級 7–9 + 班號 01–30，例如 701、815。
 export const CLASS_CODE = /^[789](0[1-9]|[12]\d|30)$/;
@@ -111,7 +111,7 @@ const STUDENT_COLUMNS = 's.id, s.registration_id, s.seat_no, s.name, s.gender, s
 export async function listMyRegistrations(db, email) {
   const { results } = await db.prepare(
     `SELECT r.id, r.activity_id, r.class_code, r.teacher_name, r.accompany, r.notes, r.status, r.submitted_at, r.draw_rank,
-            a.title, a.starts_at, a.ends_at, a.venue, a.deadline_at, a.lottery_at, a.kind
+            a.title, a.starts_at, a.ends_at, a.venue, a.deadline_at, a.lottery_at, a.kind, a.cancelled_at, a.cancel_reason
      FROM registrations r JOIN activities a ON a.id = r.activity_id
      WHERE r.teacher_email = ?1 ORDER BY r.submitted_at DESC`
   ).bind(email).all();
@@ -248,6 +248,7 @@ export async function updateActivity(db, admin, id, a, base) {
     const changed = !base || typeof base !== 'object' || Object.keys(pick(before)).some(k => String(before[k] ?? '') !== String(base[k] ?? ''));
     if (changed) throw new HttpError(409, '此活動在您開啟編輯畫面後已被修改（可能是其他管理員或其他分頁）。請重新整理頁面後再編輯，以免覆蓋最新資料。');
   }
+  if (before.cancelled_at) throw new HttpError(409, '已取消的活動不可修改');
   if (before.lottery_at || !EDITABLE.includes(before.status)) throw new HttpError(409, '已抽籤或已封存的活動不可修改');
   // 活動類型建立後不可變更（講座與意願調查的報名資料結構不同）
   if (a.kind !== before.kind) throw new HttpError(409, '活動類型建立後不可變更');
@@ -294,6 +295,7 @@ const TRANSITIONS = { draft: ['open', 'archived'], open: ['closed'], closed: ['o
 export async function setActivityStatus(db, admin, id, next) {
   const current = await getActivity(db, id);
   if (!current) throw new HttpError(404, '找不到此活動');
+  if (current.cancelled_at && next === 'open') throw new HttpError(409, '已取消的活動不可重新開放');
   if (!(TRANSITIONS[current.status] || []).includes(next)) throw new HttpError(409, `無法從「${current.status}」改為「${next}」`);
   const [res] = await db.batch([
     db.prepare('UPDATE activities SET status = ?3 WHERE id = ?1 AND status = ?2').bind(id, current.status, next),
@@ -304,6 +306,46 @@ export async function setActivityStatus(db, admin, id, next) {
   ]);
   if (!res.meta.changes) throw new HttpError(409, '活動狀態已被變更，請重新整理');
   return getActivity(db, id);
+}
+
+// 臨時取消：保留所有報名資料，停止報名（開放中改為關閉），公開顯示取消原因。不可復原。
+export async function cancelActivity(db, admin, id, rawReason, now = nowIso()) {
+  const reason = String(rawReason || '').trim();
+  if (!reason || reason.length > 200) throw new HttpError(400, '請填寫取消原因（200 字以內），會公開顯示給導師');
+  const current = await getActivity(db, id);
+  if (!current) throw new HttpError(404, '找不到此活動');
+  if (current.cancelled_at) throw new HttpError(409, '此活動已經取消');
+  if (current.status === 'archived') throw new HttpError(409, '已封存的活動不需取消');
+  const [res] = await db.batch([
+    db.prepare(
+      `UPDATE activities SET cancelled_at = ?2, cancel_reason = ?3, status = CASE WHEN status = 'open' THEN 'closed' ELSE status END
+       WHERE id = ?1 AND cancelled_at IS NULL AND status != 'archived'`
+    ).bind(id, now, reason),
+    db.prepare(
+      `INSERT INTO audit_logs (actor_email, action, activity_id, details_json)
+       SELECT ?1, 'activity_cancel', ?2, json_object('reason', ?3, 'status_before', ?4,
+         'registrations', (SELECT COUNT(*) FROM registrations WHERE activity_id = ?2 AND status != 'cancelled')) WHERE changes() = 1`
+    ).bind(admin.email, id, reason, current.status)
+  ]);
+  if (!res.meta.changes) throw new HttpError(409, '活動狀態已變更，請重新整理');
+  return getActivity(db, id);
+}
+
+// 刪除：只限從未有任何報名（含已取消的報名）的活動，例如建錯或測試用。刪除前把活動內容存入稽核紀錄。
+export async function deleteActivity(db, admin, id) {
+  const current = await getActivity(db, id);
+  if (!current) throw new HttpError(404, '找不到此活動');
+  const noRegs = 'NOT EXISTS (SELECT 1 FROM registrations WHERE activity_id = ?1)';
+  const [, res] = await db.batch([
+    db.prepare(
+      `INSERT INTO audit_logs (actor_email, action, activity_id, details_json)
+       SELECT ?2, 'activity_delete', id, json_object('title', title, 'status', status, 'kind', kind, 'starts_at', starts_at, 'opens_at', opens_at,
+         'deadline_at', deadline_at, 'created_by', created_by, 'created_at', created_at)
+       FROM activities WHERE id = ?1 AND ${noRegs}`
+    ).bind(id, admin.email),
+    db.prepare(`DELETE FROM activities WHERE id = ?1 AND ${noRegs}`).bind(id)
+  ]);
+  if (!res.meta.changes) throw new HttpError(409, '此活動已有報名紀錄，不能刪除。請改用「取消活動」，以保留報名資料。');
 }
 
 export function getActivity(db, id) {
@@ -319,6 +361,7 @@ export async function listAdminActivities(db) {
        (SELECT COUNT(*) FROM registrations r WHERE r.activity_id = a.id AND r.status = 'not_selected') AS not_selected_count,
        (SELECT COUNT(*) FROM registrations r WHERE r.activity_id = a.id AND r.status = 'cancelled') AS cancelled_count,
        (SELECT COUNT(*) FROM registrations r WHERE r.activity_id = a.id AND r.status = 'pending') AS registered_count,
+       (SELECT COUNT(*) FROM registrations r WHERE r.activity_id = a.id) AS total_registrations,
        ${STUDENT_COUNTS('a')}
      FROM activities a ORDER BY starts_at DESC`
   ).all();
@@ -359,6 +402,7 @@ export async function drawLottery(db, admin, activityId, now = nowIso(), seedByt
   const activity = await getActivity(db, activityId);
   if (!activity) throw new HttpError(404, '找不到此活動');
   if (activity.kind === 'survey') throw new HttpError(409, '意願調查不需要抽籤');
+  if (activity.cancelled_at) throw new HttpError(409, '活動已取消，不能抽籤');
   if (activity.lottery_at) throw new HttpError(409, '此活動已經抽過籤，不可重複抽籤');
   if (!['open', 'closed'].includes(activity.status)) throw new HttpError(409, '活動狀態不允許抽籤');
   if (now < activity.deadline_at) throw new HttpError(409, '報名尚未截止，不能抽籤');

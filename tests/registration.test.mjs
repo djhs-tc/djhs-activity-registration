@@ -328,3 +328,48 @@ test('stale edit form cannot overwrite newer changes (two tabs / two admins)', a
   assert.equal(c.status, 200);
   assert.equal(c.data.activity.description, '只改說明');
 });
+
+// ---------- 取消活動與刪除活動 ----------
+test('cancel activity: stops registration, keeps data, public shows reason, cannot reopen/edit/draw', async () => {
+  const { call, DB } = setup();
+  const id = await openActivity(call);
+  assert.equal((await call('/api/registrations', { method: 'POST', body: reg(id, '701'), as: teacher(1) })).status, 201);
+  assert.equal((await call(`/api/admin/activities/${id}/cancel`, { method: 'POST', body: { reason: '' }, as: ADMIN })).status, 400);
+  assert.equal((await call(`/api/admin/activities/${id}/cancel`, { method: 'POST', body: { reason: '講師臨時無法出席' }, as: teacher(1) })).status, 403);
+  const c = await call(`/api/admin/activities/${id}/cancel`, { method: 'POST', body: { reason: '講師臨時無法出席' }, as: ADMIN });
+  assert.equal(c.status, 200);
+  assert.equal(c.data.activity.status, 'closed');
+  assert.ok(c.data.activity.cancelled_at);
+
+  const pub = (await call('/api/activities')).data.activities.find(a => a.id === id);
+  assert.equal(pub.cancel_reason, '講師臨時無法出席');
+  const mine = (await call('/api/my/registrations', { as: teacher(1) })).data.registrations[0];
+  assert.ok(mine.cancelled_at);
+  assert.equal(mine.status, 'priority', 'registration data kept as-is');
+
+  assert.equal((await call('/api/registrations', { method: 'POST', body: reg(id, '702'), as: teacher(2) })).status, 409);
+  assert.match((await call(`/api/admin/activities/${id}/status`, { method: 'POST', body: { status: 'open' }, as: ADMIN })).data.error, /不可重新開放/);
+  assert.match((await call(`/api/admin/activities/${id}`, { method: 'PUT', body: { ...activityBody(), base: await current(call, id) }, as: ADMIN })).data.error, /已取消/);
+  assert.equal((await call(`/api/admin/activities/${id}/cancel`, { method: 'POST', body: { reason: 'again' }, as: ADMIN })).status, 409);
+  assert.equal((await call(`/api/admin/activities/${id}/status`, { method: 'POST', body: { status: 'archived' }, as: ADMIN })).status, 200, 'can archive after cancel');
+  assert.match((await call(`/api/admin/activities/${id}/delete`, { method: 'POST', body: {}, as: ADMIN })).data.error, /已有報名紀錄/);
+  const log = JSON.parse(DB.raw.prepare(`SELECT details_json FROM audit_logs WHERE action='activity_cancel'`).get().details_json);
+  assert.deepEqual(log, { reason: '講師臨時無法出席', status_before: 'open', registrations: 1 });
+});
+
+test('delete activity: only when there were never any registrations; audited', async () => {
+  const { call, DB } = setup();
+  const draft = (await call('/api/admin/activities', { method: 'POST', body: activityBody({ title: '建錯的活動' }), as: ADMIN })).data.activity.id;
+  assert.equal((await call(`/api/admin/activities/${draft}/delete`, { method: 'POST', body: {}, as: teacher(1) })).status, 403);
+  assert.equal((await call(`/api/admin/activities/${draft}/delete`, { method: 'POST', body: {}, as: ADMIN })).status, 200);
+  assert.equal(DB.raw.prepare('SELECT COUNT(*) n FROM activities WHERE id = ?').get(draft).n, 0);
+  assert.equal(JSON.parse(DB.raw.prepare(`SELECT details_json FROM audit_logs WHERE action='activity_delete'`).get().details_json).title, '建錯的活動');
+  assert.equal((await call(`/api/admin/activities/${draft}/delete`, { method: 'POST', body: {}, as: ADMIN })).status, 404);
+
+  // 曾有報名（即使已取消）就不能刪
+  const id = await openActivity(call);
+  const rid = (await call('/api/registrations', { method: 'POST', body: reg(id, '701'), as: teacher(1) })).data.registration.id;
+  await call(`/api/admin/activities/${id}/registrations/${rid}/cancel`, { method: 'POST', body: { reason: 'x' }, as: ADMIN });
+  assert.equal((await call(`/api/admin/activities/${id}/delete`, { method: 'POST', body: {}, as: ADMIN })).status, 409);
+  assert.equal((await current(call, id)).total_registrations, 1);
+});

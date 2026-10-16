@@ -22,7 +22,10 @@ CREATE TABLE IF NOT EXISTS activities (
  max_students_per_class INTEGER,
  -- 承辦人（姓名公開顯示；信箱僅管理員可見，作為行事曆邀請／通知對象）
  organizer_name TEXT NOT NULL DEFAULT '',
- organizer_email TEXT NOT NULL DEFAULT ''
+ organizer_email TEXT NOT NULL DEFAULT '',
+ -- 臨時取消：保留報名資料，公開顯示「活動取消」與原因
+ cancelled_at TEXT,
+ cancel_reason TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS registrations (
  id TEXT PRIMARY KEY,

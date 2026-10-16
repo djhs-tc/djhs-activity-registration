@@ -7,7 +7,7 @@ import { HttpError, json, readJson, nowIso } from './http.js';
 import {
   listPublicActivities, validateRegistration, register, listMyRegistrations,
   validateActivity, createActivity, updateActivity, setActivityStatus, getActivity, listAdminActivities,
-  listRegistrations, cancelRegistration, drawLottery, toCsv, toStudentsCsv, toIcs,
+  listRegistrations, cancelRegistration, drawLottery, toCsv, toStudentsCsv, toIcs, cancelActivity, deleteActivity,
   withdrawStudent, restoreStudent, setStudentPaid
 } from './activities.js';
 
@@ -55,6 +55,8 @@ const ROUTES = [
   ['POST', /^\/api\/admin\/activities$/, adminCreateActivity],
   ['PUT', new RegExp(`^/api/admin/activities/${ID}$`), adminUpdateActivity],
   ['POST', new RegExp(`^/api/admin/activities/${ID}/status$`), adminSetStatus],
+  ['POST', new RegExp(`^/api/admin/activities/${ID}/cancel$`), adminCancelActivity],
+  ['POST', new RegExp(`^/api/admin/activities/${ID}/delete$`), adminDeleteActivity],
   ['GET', new RegExp(`^/api/admin/activities/${ID}/registrations$`), adminRegistrations],
   ['GET', new RegExp(`^/api/admin/activities/${ID}/registrations\\.csv$`), adminRegistrationsCsv],
   ['POST', new RegExp(`^/api/admin/activities/${ID}/registrations/${ID}/cancel$`), adminCancelRegistration],
@@ -200,6 +202,19 @@ async function adminSetStatus({ request, env, params }) {
   const admin = await requireAdmin(request, env);
   const { status } = await readJson(request);
   return json({ activity: await setActivityStatus(requireDb(env), admin, params[0], String(status || '')) });
+}
+
+async function adminCancelActivity({ request, env, params }) {
+  const admin = await requireAdmin(request, env);
+  const { reason } = await readJson(request);
+  return json({ activity: await cancelActivity(requireDb(env), admin, params[0], reason) });
+}
+
+async function adminDeleteActivity({ request, env, params }) {
+  const admin = await requireAdmin(request, env);
+  await readJson(request);
+  await deleteActivity(requireDb(env), admin, params[0]);
+  return json({ ok: true });
 }
 
 async function adminRegistrations({ request, env, params }) {

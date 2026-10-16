@@ -45,6 +45,8 @@ GitHub main 推送 ──► Cloudflare Workers Builds（deploy command: npx wra
 | GET / POST | `/api/admin/activities` | 管理員 | 列出全部活動（含各狀態班數）／建立活動（草稿） |
 | PUT | `/api/admin/activities/:id` | 管理員 | 修改活動（抽籤前皆可；修改後依報名順序重新計算優先錄取） |
 | POST | `/api/admin/activities/:id/status` | 管理員 | 狀態轉換：草稿→開放、開放→關閉、關閉→開放、草稿／關閉／已抽籤→封存 |
+| POST | `/api/admin/activities/:id/cancel` | 管理員 | 臨時取消活動 `{reason}`：停止報名、保留報名資料、公開顯示原因；不可復原 |
+| POST | `/api/admin/activities/:id/delete` | 管理員 | 刪除活動：僅限從未有任何報名紀錄者，內容存入稽核紀錄 |
 | GET | `/api/admin/activities/:id/registrations` | 管理員 | 報名名單與抽籤紀錄 |
 | GET | `/api/admin/activities/:id/registrations.csv` | 管理員 | CSV 匯出（Excel 可直接開啟，已防公式注入） |
 | POST | `/api/admin/activities/:id/registrations/:rid/cancel` | 管理員 | 取消某班報名 `{reason}` |
@@ -70,6 +72,10 @@ GitHub main 推送 ──► Cloudflare Workers Builds（deploy command: npx wra
   - 每次狀態異動都寫入 `priority_recompute` 稽核紀錄（班級、原狀態、新狀態）。
   - 抽籤後取消不會重新計算，名額異動由管理員人工處理。
 - 稽核紀錄 `audit_logs`：`login`、`activity_create`、`activity_update`（含修改前後）、`activity_status`、`register`、`registration_cancel`、`priority_recompute`、`lottery_draw`、`student_withdraw`、`student_restore`、`student_paid`、`student_unpaid`、`allowlist_add`、`allowlist_remove`。
+
+### 取消與刪除活動
+- **取消活動**（臨時不辦）：需填原因（公開顯示）。開放中改為關閉並停止報名；所有報名資料保留，導師在「我的報名」看到「活動已取消：原因」。取消後不可編輯、重新開放或抽籤，可再封存。稽核紀錄 `activity_cancel` 記下原因與當時有效報名數。系統不會自動通知導師，請另行通知。
+- **刪除活動**（建錯或測試）：只有從未有任何報名紀錄（含已取消的報名）的活動才能刪除；刪除前活動內容存入稽核紀錄 `activity_delete`。
 
 ### 承辦人與行事曆提醒
 - 每個活動必填**承辦人姓名與信箱**。姓名顯示在公開活動頁；信箱只有管理員可見（公開 API 不回傳）。
@@ -132,7 +138,7 @@ npx wrangler dev --local
 
 ## 上線前測試清單
 
-- [x] `npm test` 全部通過（54 項，含營隊意願調查、帳號名單、行事曆、防止舊表單覆蓋）
+- [x] `npm test` 全部通過（56 項）
 - [x] 本機 `wrangler dev` 端到端：草稿不可報名、優先名額、重複報名、取消、截止前不可抽籤、截止後不可報名、同時抽籤僅一次成功、稽核紀錄筆數正確
 - [x] `@st.tc.edu.tw`、`@tjjh.tc.edu.tw` 帳號可登入；個人 Gmail 被拒絕；`audit_logs` 有 login 紀錄
 - [ ] `scripts/verify-live.sh` 全部 PASS（每次部署後）

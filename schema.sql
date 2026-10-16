@@ -25,7 +25,10 @@ CREATE TABLE IF NOT EXISTS activities (
  organizer_email TEXT NOT NULL DEFAULT '',
  -- 臨時取消：保留報名資料，公開顯示「活動取消」與原因
  cancelled_at TEXT,
- cancel_reason TEXT NOT NULL DEFAULT ''
+ cancel_reason TEXT NOT NULL DEFAULT '',
+ -- 營隊意願調查：每人費用（0 = 免費）與最低開班人數（全校總人數，0 = 不限）
+ fee INTEGER NOT NULL DEFAULT 0,
+ min_participants INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS registrations (
  id TEXT PRIMARY KEY,

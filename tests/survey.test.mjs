@@ -29,7 +29,7 @@ function surveyBody(over = {}) {
   const s = tp(60 * 24 * 30), e = tp(60 * 24 * 32), o = tp(-60), d = tp(60 * 24);
   return { kind: 'survey', title: '暑期營隊', speaker: '', venue: '', audience: '七年級', description: '',
     starts_date: s.date, starts_time: s.time, ends_date: e.date, ends_time: e.time, opens_date: o.date, opens_time: o.time,
-    deadline_date: d.date, deadline_time: d.time, max_students_per_class: 5, organizer_name: '教學組長', organizer_email: 'tjjh111@tjjh.tc.edu.tw', ...over };
+    deadline_date: d.date, deadline_time: d.time, max_students_per_class: 5, fee: 100, min_participants: 20, organizer_name: '教學組長', organizer_email: 'tjjh111@tjjh.tc.edu.tw', ...over };
 }
 const T1 = 't1@st.tc.edu.tw', T2 = 't2@st.tc.edu.tw';
 const roster = [{ seat_no: 1, name: '王小明', gender: '男' }, { seat_no: 2, name: '李小華', gender: '女' }, { seat_no: 5, name: '陳大同', gender: 'M' }];
@@ -161,4 +161,20 @@ test('activity kind cannot change after creation; survey max is editable', async
   assert.equal(ok.status, 200);
   assert.equal(ok.data.activity.max_students_per_class, 40);
   assert.match((await call('/api/admin/activities', { body: surveyBody({ max_students_per_class: 0 }), as: ADMIN })).data.error, /人數上限/);
+});
+
+test('fee and minimum participants: validated, public, free camps show 免費 in CSV', async () => {
+  const { call } = setup();
+  assert.match((await call('/api/admin/activities', { body: surveyBody({ fee: -1 }), as: ADMIN })).data.error, /費用/);
+  assert.match((await call('/api/admin/activities', { body: surveyBody({ min_participants: 1.5 }), as: ADMIN })).data.error, /最低開班人數/);
+  const id = await openSurvey(call, { title: '數學精進營', fee: 0, min_participants: 6 });
+  const pub = (await call('/api/activities')).data.activities.find(a => a.id === id);
+  assert.deepEqual([pub.fee, pub.min_participants], [0, 6]);
+  await call('/api/registrations', { body: reg(id, '701'), as: T1 });
+  const csv = (await call(`/api/admin/activities/${id}/registrations.csv`, { as: ADMIN })).data;
+  assert.match(csv, /701,1,王小明,男,參加,免費,,/);
+  // 講座的費用與門檻一律為 0
+  const s = tp(60 * 24 * 7), e = tp(60 * 24 * 7 + 120), o = tp(-60), d = tp(60);
+  const lec = await call('/api/admin/activities', { body: { title: '講座', starts_date: s.date, starts_time: s.time, ends_date: e.date, ends_time: e.time, opens_date: o.date, opens_time: o.time, deadline_date: d.date, deadline_time: d.time, priority_quota: 15, lottery_quota: 3, fee: 500, min_participants: 9, organizer_name: '組長', organizer_email: 'a@st.tc.edu.tw' }, as: ADMIN });
+  assert.deepEqual([lec.data.activity.fee, lec.data.activity.min_participants], [0, 0]);
 });

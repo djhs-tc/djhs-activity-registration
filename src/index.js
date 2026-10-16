@@ -237,7 +237,7 @@ async function adminRegistrationsCsv({ request, env, params }) {
   const survey = activity.kind === 'survey';
   const filename = encodeURIComponent(`${activity.title}-${survey ? '學生名單' : '報名名單'}.csv`);
   const rows = await listRegistrations(db, params[0]);
-  return new Response(survey ? toStudentsCsv(rows) : toCsv(rows), {
+  return new Response(survey ? toStudentsCsv(rows, activity) : toCsv(rows), {
     headers: {
       'content-type': 'text/csv; charset=utf-8',
       'content-disposition': `attachment; filename="registrations.csv"; filename*=UTF-8''${filename}`,

@@ -157,7 +157,7 @@ bash scripts/verify-live.sh
 - 程式碼：`src/`（後端）、`public/index.html`（前端，單一檔案）
 - 測試：在專案資料夾執行 `npm test`。修改後全部通過才推送。
 - 資料表變更：寫在 `migrations/`，**先在正式資料庫執行，再推送程式**。
-- 也可以請 AI 程式助理（例如 Claude Code）讀這份手冊和 `README.md` 後協助修改。
+- 也可以請 AI 程式助理（例如 Claude Code）協助修改。它會先讀 `CLAUDE.md`（給 AI 的工作守則：修改流程、安全規定、已知地雷），再讀這份手冊和 `README.md`。
 
 ---
 

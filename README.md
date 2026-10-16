@@ -21,7 +21,7 @@ GitHub main 推送 ──► Cloudflare Workers Builds（deploy command: npx wra
 | `src/auth.js` | Google ID token 驗證（JWKS 簽章、iss、aud、exp、nonce、email_verified、hd 網域）與 session cookie |
 | `src/activities.js` | 活動、報名、取消、抽籤與 CSV 的商業邏輯 |
 | `src/http.js` | JSON 回應、錯誤、臺灣時間轉換 |
-| `public/index.html` | 前端：首頁資訊看板；活動列表（列表／月曆／時程表檢視）、我的報名、管理後台（活動管理可切換卡片／表格，表格可排序與搜尋） |
+| `public/index.html` | 前端：首頁資訊看板；活動列表（列表／圖文／月曆檢視）、我的報名、管理後台（活動管理可切換卡片／表格，表格可排序與搜尋） |
 | `public/privacy.html` | 隱私權說明（Google 同意畫面引用） |
 | `schema.sql` | D1 完整結構（新環境建表用） |
 | `migrations/` | 已對正式 D1 執行過的結構變更紀錄 |

@@ -29,7 +29,7 @@
 |---|---|---|---|
 | **Cloudflare** | 網站主機（Worker 名稱 `activity`）、資料庫（D1：`djhs-activity-db`）、自動抽籤排程 | https://dash.cloudflare.com | 帳號 Members → **Super Administrator** |
 | **GitHub** | 程式碼。推送到 `main` 分支後，Cloudflare 會自動部署 | https://github.com/djhs-tc/djhs-activity-registration（學校組織 `djhs-tc`，擁有者為教學組職位帳號 `djhs-academic`） | 組織的 **Owner**（交接時移交 `djhs-academic` 帳號，含兩步驟驗證與救援碼） |
-| **Google Cloud** | 「使用 Google 帳號登入」的設定（OAuth 用戶端） | https://console.cloud.google.com → APIs & Services → Credentials | 專案 IAM → **Owner** |
+| **Google Cloud** | 「使用 Google 帳號登入」的設定（OAuth 用戶端），專案名稱 **DocHelperBot** | https://console.cloud.google.com → APIs & Services → Credentials | 專案 IAM → **Owner** |
 | **管理員名單** | 誰可以進入「管理後台」 | Cloudflare → Workers → `activity` → Settings → Variables and Secrets → `ADMIN_EMAILS` | 交接時把前任者的信箱換成接任者的 |
 
 ### Cloudflare 上的設定（Workers → `activity` → Settings）
@@ -134,9 +134,9 @@ bash scripts/verify-live.sh
 **前任者與接任者一起做：**
 
 - [ ] **GitHub**：儲存庫已在學校組織 `djhs-tc`（2026-10-16 轉移）。移交職位帳號 `djhs-academic`（密碼、兩步驟驗證、救援碼），或把接任者的 GitHub 帳號加為組織 Owner。
-- [ ] **Cloudflare**：把接任者（建議用職位帳號）加為 Super Administrator。
+- [x] **Cloudflare**：教學組職位帳號已加為 Super Administrator（2026-10-16）。交接時移交職位帳號，或把接任者另外加入。
 - [ ] **自動部署**：Cloudflare → Workers → `activity` → Settings → Build 應連結 `djhs-tc/djhs-activity-registration` 的 `main`（已於 2026-10-16 連結）。若 GitHub 組織或儲存庫有異動，需在此重新連結：Git account 選 `djhs-tc`、Build command 留空、Deploy command 為 `npx wrangler deploy`。
-- [ ] **Google Cloud**：把接任者加為專案 Owner。
+- [x] **Google Cloud**：教學組職位帳號已加為專案（DocHelperBot）Owner（2026-10-16）。⚠️ 這個專案是用前任者的**個人 Google 帳號**建立的，前任者離職前務必把自己的個人帳號從 IAM 移除。
 - [ ] **管理員名單**：更新 `ADMIN_EMAILS`，移除前任者、加入接任者。
 - [ ] **更換 `SESSION_SECRET`**：產生一組新的隨機字串（PowerShell 指令見下方），所有人的登入狀態會失效。
 - [ ] **確認可以登入**：接任者用自己的帳號登入，看得到「管理後台」。

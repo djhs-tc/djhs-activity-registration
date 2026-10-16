@@ -379,3 +379,37 @@ test('open mode cannot be switched once registrations exist', async () => {
   const res = await call(`/api/admin/activities/${id}`, { method: 'PUT', body: { ...surveyBody({ min_participants: 0, fill_mode: 'student' }), base: cur }, as: ADMIN });
   assert.match(res.data.error, /不能切換填寫方式/);
 });
+
+test('manual backfill after survey lottery: next by draw rank, one per click, restore cannot overfill', async () => {
+  const { call, DB } = setup();
+  const id = await openSurvey(call, { max_participants: 3, overflow_mode: 'lottery', min_participants: 0 });
+  for (const [i, c] of ['701', '702'].entries()) await call('/api/registrations', { body: reg(id, c, roster3(1)), as: `b${i}@st.tc.edu.tw` });
+  const path = `/api/admin/activities/${id}/backfill`;
+  assert.match((await call(path, { body: {}, as: ADMIN })).data.error, /尚未抽籤/);
+  DB.raw.prepare(`UPDATE activities SET deadline_at = '2020-01-01T00:00:00.000Z' WHERE id = ?`).run(id);
+  await call(`/api/admin/activities/${id}/draw`, { body: {}, as: ADMIN });
+  assert.equal((await call(path, { body: {}, as: 'b0@st.tc.edu.tw' })).status, 403);
+  assert.match((await call(path, { body: {}, as: ADMIN })).data.error, /沒有空出的名額/);
+  const sel = DB.raw.prepare(`SELECT id, registration_id FROM registration_students WHERE draw_result='selected' ORDER BY draw_rank`).all();
+  const next = DB.raw.prepare(`SELECT id FROM registration_students WHERE draw_result='not_selected' ORDER BY draw_rank`).all().map(r => r.id);
+  // 一位錄取者不參加 → 同時按兩次只遞補一位，為抽籤序最前的未錄取者
+  assert.equal((await call(`/api/registrations/${sel[0].registration_id}/students/${sel[0].id}/withdraw`, { body: {}, as: ADMIN })).status, 200);
+  const res = await Promise.all([1, 2].map(() => call(path, { body: {}, as: ADMIN })));
+  assert.deepEqual(res.map(r => r.status).sort(), [200, 409]);
+  const ok = res.find(r => r.status === 200).data.result;
+  assert.deepEqual([ok.vacancies, ok.waiting], [0, 2]);
+  const promoted = DB.raw.prepare(`SELECT id, backfilled_at FROM registration_students WHERE backfilled_at IS NOT NULL`).all();
+  assert.deepEqual(promoted.map(r => r.id), [next[0]]);
+  assert.equal(DB.raw.prepare(`SELECT COUNT(*) n FROM registration_students WHERE status='active' AND draw_result='selected'`).get().n, 3);
+  assert.equal(DB.raw.prepare(`SELECT COUNT(*) n FROM audit_logs WHERE action='lottery_backfill'`).get().n, 1);
+  // 原錄取者恢復參加會超過上限 → 拒絕
+  assert.match((await call(`/api/admin/registrations/${sel[0].registration_id}/students/${sel[0].id}/restore`, { body: {}, as: ADMIN })).data.error, /遞補/);
+  const csv = (await call(`/api/admin/activities/${id}/registrations.csv`, { as: ADMIN })).data;
+  assert.equal((csv.match(/錄取（遞補）/g) || []).length, 1);
+  // 候選者全數不參加 → 沒有可遞補者
+  for (const s of DB.raw.prepare(`SELECT id, registration_id FROM registration_students WHERE draw_result='not_selected'`).all()) {
+    await call(`/api/registrations/${s.registration_id}/students/${s.id}/withdraw`, { body: {}, as: ADMIN });
+  }
+  await call(`/api/registrations/${sel[1].registration_id}/students/${sel[1].id}/withdraw`, { body: {}, as: ADMIN });
+  assert.match((await call(path, { body: {}, as: ADMIN })).data.error, /沒有可遞補的候選者/);
+});

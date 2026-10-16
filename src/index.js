@@ -8,7 +8,7 @@ import { HttpError, json, readJson, nowIso } from './http.js';
 import {
   listPublicActivities, validateRegistration, register, listMyRegistrations,
   validateActivity, createActivity, updateActivity, setActivityStatus, getActivity, listAdminActivities,
-  listRegistrations, cancelRegistration, drawLottery, toCsv, toStudentsCsv, toIcs, cancelActivity, deleteActivity,
+  listRegistrations, cancelRegistration, drawLottery, toCsv, toStudentsCsv, toIcs, cancelActivity, deleteActivity, backfillNext,
   withdrawStudent, restoreStudent, setStudentPaid, selfCancelRegistration, openRegister, openCancel
 } from './activities.js';
 
@@ -66,6 +66,7 @@ const ROUTES = [
   ['GET', new RegExp(`^/api/admin/activities/${ID}/registrations\\.csv$`), adminRegistrationsCsv],
   ['POST', new RegExp(`^/api/admin/activities/${ID}/registrations/${ID}/cancel$`), adminCancelRegistration],
   ['POST', new RegExp(`^/api/admin/activities/${ID}/draw$`), adminDraw],
+  ['POST', new RegExp(`^/api/admin/activities/${ID}/backfill$`), adminBackfill],
   ['GET', new RegExp(`^/api/admin/activities/${ID}/calendar\\.ics$`), adminCalendar],
   ['POST', new RegExp(`^/api/admin/registrations/${ID}/students/${SID}/restore$`), adminStudentRestore],
   ['POST', new RegExp(`^/api/admin/registrations/${ID}/students/${SID}/paid$`), adminStudentPaid],
@@ -230,6 +231,12 @@ async function adminSetStatus({ request, env, params }) {
   const admin = await requireAdmin(request, env);
   const { status } = await readJson(request);
   return json({ activity: await setActivityStatus(requireDb(env), admin, params[0], String(status || '')) });
+}
+
+async function adminBackfill({ request, env, params }) {
+  const admin = await requireAdmin(request, env);
+  await readJson(request);
+  return json({ result: await backfillNext(requireDb(env), admin, params[0]) });
 }
 
 async function adminCancelActivity({ request, env, params }) {

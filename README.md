@@ -52,6 +52,7 @@ GitHub main 推送 ──► Cloudflare Workers Builds（deploy command: npx wra
 | POST | `/api/admin/activities/:id/registrations/:rid/cancel` | 管理員 | 取消某班報名 `{reason}` |
 | GET | `/api/admin/activities/:id/calendar.ics` | 管理員 | 行事曆檔：開放報名、報名截止、活動當天三個事件，內建前 1 天／前 1 小時提醒，承辦人列為與會者 |
 | POST | `/api/admin/activities/:id/draw` | 管理員 | 執行抽籤（截止後、僅一次；意願調查不適用） |
+| POST | `/api/admin/activities/:id/backfill` | 管理員 | 抽籤後手動遞補：依抽籤序錄取下一位未錄取者（一次一位，需有空缺） |
 | POST | `/api/registrations/:rid/students/:sid/withdraw` | 導師（自己的報名、截止前）／管理員 | 意願調查：標記學生不參加 |
 | POST | `/api/admin/registrations/:rid/students/:sid/restore` | 管理員 | 恢復學生為參加 |
 | POST | `/api/admin/registrations/:rid/students/:sid/paid` | 管理員 | 登記繳費 `{paid: true/false}` |
@@ -71,8 +72,9 @@ GitHub main 推送 ──► Cloudflare Workers Builds（deploy command: npx wra
   - **取消**：只能由管理員取消並填寫原因；抽籤候選中最早報名的班級**自動遞補**為優先錄取。被取消的班級**可以重新報名**，排在最後。
   - **修改名額**：依同一規則重新計算；調低名額時，較晚報名的優先錄取班級會改為抽籤候選（畫面會先確認）。
   - 每次狀態異動都寫入 `priority_recompute` 稽核紀錄（班級、原狀態、新狀態）。
-  - 抽籤後取消不會重新計算，名額異動由管理員人工處理。
-- 稽核紀錄 `audit_logs`：`login`、`activity_create`、`activity_update`（含修改前後）、`activity_status`、`register`、`registration_cancel`、`priority_recompute`、`lottery_draw`、`student_withdraw`、`student_restore`、`student_paid`、`student_unpaid`、`allowlist_add`、`allowlist_remove`。
+  - 抽籤後取消不會重新計算。
+- **抽籤後手動遞補**：錄取者不參加時，管理員先取消該班（講座）或將學生標記不參加（營隊），「抽籤作業」會顯示空缺數與依抽籤序的下一位，按「遞補下一位」並確認後錄取。空缺＝講座「優先＋抽籤名額 − 優先錄取與抽籤錄取班數」、營隊「人數上限 − 錄取且參加的學生數」。空缺檢查與更新在同一個 SQL 敘述內，同時按兩次也只會遞補一位。遞補者在名單、「我的報名」與 CSV 標示「錄取（遞補）」，稽核紀錄 `lottery_backfill`。名額已被遞補後，原錄取學生不能再「恢復參加」（避免超過上限）。
+- 稽核紀錄 `audit_logs`：`login`、`activity_create`、`activity_update`（含修改前後）、`activity_status`、`register`、`registration_cancel`、`priority_recompute`、`lottery_draw`、`lottery_backfill`、`student_withdraw`、`student_restore`、`student_paid`、`student_unpaid`、`allowlist_add`、`allowlist_remove`。
 
 ### 取消與刪除活動
 - **取消活動**（臨時不辦）：需填原因（公開顯示）。開放中改為關閉並停止報名；所有報名資料保留，導師在「我的報名」看到「活動已取消：原因」。取消後不可編輯、重新開放或抽籤，可再封存。稽核紀錄 `activity_cancel` 記下原因與當時有效報名數。系統不會自動通知導師，請另行通知。
@@ -152,7 +154,7 @@ npx wrangler dev --local
 
 ## 上線前測試清單
 
-- [x] `npm test` 全部通過（71 項）
+- [x] `npm test` 全部通過（73 項）
 - [x] 本機 `wrangler dev` 端到端：草稿不可報名、優先名額、重複報名、取消、截止前不可抽籤、截止後不可報名、同時抽籤僅一次成功、稽核紀錄筆數正確
 - [x] `@st.tc.edu.tw`、`@tjjh.tc.edu.tw` 帳號可登入；個人 Gmail 被拒絕；`audit_logs` 有 login 紀錄
 - [ ] `scripts/verify-live.sh` 全部 PASS（每次部署後）

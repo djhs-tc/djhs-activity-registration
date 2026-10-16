@@ -52,7 +52,9 @@ CREATE TABLE IF NOT EXISTS registrations (
  submitter TEXT NOT NULL DEFAULT 'teacher' CHECK(submitter IN ('teacher','student')),
  -- 0 = Email 為免登入自填、未驗證；cancel_hash = 取消碼的 SHA-256（免登入報名用）
  verified INTEGER NOT NULL DEFAULT 1 CHECK(verified IN (0,1)),
- cancel_hash TEXT
+ cancel_hash TEXT,
+ -- 抽籤後依抽籤序遞補錄取的時間（講座以班為單位）
+ backfilled_at TEXT
 );
 -- 導師填寫：同一活動同一班級只能有一筆「未取消」的報名；取消後可重新報名。
 -- 學生填寫：一人一筆，由程式檢查同班同座號、同帳號不重複。
@@ -75,6 +77,8 @@ CREATE TABLE IF NOT EXISTS registration_students (
  -- 超過名額抽籤的結果（抽籤前為 NULL）
  draw_result TEXT CHECK(draw_result IN ('selected','not_selected')),
  draw_rank INTEGER,
+ -- 抽籤後依抽籤序遞補錄取的時間（營隊以學生為單位）
+ backfilled_at TEXT,
  UNIQUE(registration_id, seat_no)
 );
 CREATE INDEX IF NOT EXISTS idx_students_registration ON registration_students(registration_id);

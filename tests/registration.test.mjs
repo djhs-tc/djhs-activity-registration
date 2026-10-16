@@ -385,3 +385,21 @@ test('lottery is allowed before the deadline once registration is closed early',
   assert.equal(r.selected.length, 1);
   assert.equal(DB.raw.prepare(`SELECT status FROM activities WHERE id='A'`).get().status, 'drawn');
 });
+
+test('manual backfill after lecture lottery: cancelled seat goes to next class by draw rank', async () => {
+  const { backfillNext } = await import('../src/activities.js');
+  const { DB, idOf } = await seeded(1, 5);
+  await drawLottery(DB, admin, 'A', '2026-11-07T00:00:00.000Z', new Uint8Array(32).fill(2));
+  await assert.rejects(backfillNext(DB, admin, 'A', '2026-11-08T00:00:00.000Z'), /沒有空出的名額/);
+  const winner = DB.raw.prepare(`SELECT class_code FROM registrations WHERE status='selected'`).get().class_code;
+  const next = DB.raw.prepare(`SELECT class_code FROM registrations WHERE status='not_selected' ORDER BY draw_rank`).get().class_code;
+  await cancelRegistration(DB, admin, 'A', idOf(winner), '不參加');
+  const r = await backfillNext(DB, admin, 'A', '2026-11-08T00:00:01.000Z');
+  assert.equal(r.promoted.class_code, next);
+  assert.deepEqual([r.vacancies, r.waiting], [0, 2]);
+  await assert.rejects(backfillNext(DB, admin, 'A', '2026-11-08T00:00:02.000Z'), /沒有空出的名額/);
+  const rows = await listRegistrations(DB, 'A');
+  assert.ok(rows.find(x => x.class_code === next).backfilled_at);
+  assert.match(toCsv(rows), new RegExp(`,${next},.*遞補錄取`));
+  assert.equal(DB.raw.prepare(`SELECT COUNT(*) n FROM audit_logs WHERE action='lottery_backfill'`).get().n, 1);
+});

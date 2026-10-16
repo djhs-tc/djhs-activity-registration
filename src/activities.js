@@ -141,12 +141,12 @@ export async function register(db, user, input, now = nowIso(), opts = {}) {
   return db.prepare('SELECT id, activity_id, class_code, status, submitted_at FROM registrations WHERE id = ?1').bind(id).first();
 }
 
-const STUDENT_COLUMNS = 's.id, s.registration_id, s.seat_no, s.name, s.gender, s.status, s.withdrawn_at, s.withdrawn_by, s.paid, s.paid_at, s.paid_by, s.draw_result, s.draw_rank';
+const STUDENT_COLUMNS = 's.id, s.registration_id, s.seat_no, s.name, s.gender, s.status, s.withdrawn_at, s.withdrawn_by, s.paid, s.paid_at, s.paid_by, s.draw_result, s.draw_rank, s.backfilled_at';
 
 export async function listMyRegistrations(db, email) {
   const { results } = await db.prepare(
     `SELECT r.id, r.activity_id, r.class_code, r.teacher_name, r.accompany, r.notes, r.status, r.submitted_at, r.draw_rank,
-            a.title, a.starts_at, a.ends_at, a.venue, a.deadline_at, a.lottery_at, a.kind, a.cancelled_at, a.cancel_reason, a.fill_mode, r.submitter
+            a.title, a.starts_at, a.ends_at, a.venue, a.deadline_at, a.lottery_at, a.kind, a.cancelled_at, a.cancel_reason, a.fill_mode, r.submitter, r.backfilled_at
      FROM registrations r JOIN activities a ON a.id = r.activity_id
      WHERE r.teacher_email = ?1 ORDER BY r.submitted_at DESC`
   ).bind(email).all();
@@ -241,11 +241,16 @@ export async function restoreStudent(db, admin, registrationId, studentId) {
   const [res] = await db.batch([
     db.prepare(
       `UPDATE registration_students SET status = 'active', withdrawn_at = NULL, withdrawn_by = NULL
-       WHERE id = ?2 AND registration_id = ?1 AND status = 'withdrawn'`
+       WHERE id = ?2 AND registration_id = ?1 AND status = 'withdrawn'
+         -- 抽籤錄取後退出、名額已由他人遞補者，恢復會超過上限
+         AND (draw_result IS NOT 'selected' OR (SELECT a.max_participants FROM registrations r JOIN activities a ON a.id = r.activity_id WHERE r.id = ?1) >
+           (SELECT COUNT(*) FROM registration_students s2 JOIN registrations r2 ON r2.id = s2.registration_id
+            WHERE r2.activity_id = (SELECT activity_id FROM registrations WHERE id = ?1) AND r2.status != 'cancelled'
+              AND s2.status = 'active' AND s2.draw_result = 'selected'))`
     ).bind(registrationId, Number(studentId)),
     studentAudit(db, admin.email, 'student_restore', registrationId, studentId)
   ]);
-  if (!res.meta.changes) throw new HttpError(409, '此學生目前不是「不參加」狀態');
+  if (!res.meta.changes) throw new HttpError(409, '此學生目前不是「不參加」狀態，或原錄取名額已由他人遞補');
 }
 
 export async function setStudentPaid(db, admin, registrationId, studentId, paid, now = nowIso()) {
@@ -480,7 +485,7 @@ export async function listAdminActivities(db) {
 
 export async function listRegistrations(db, activityId) {
   const { results } = await db.prepare(
-    `SELECT id, class_code, teacher_name, teacher_email, accompany, notes, status, submitted_at, draw_rank, submitter, verified
+    `SELECT id, class_code, teacher_name, teacher_email, accompany, notes, status, submitted_at, draw_rank, submitter, verified, backfilled_at
      FROM registrations WHERE activity_id = ?1 ORDER BY submitted_at ASC, rowid ASC`
   ).bind(activityId).all();
   const { results: students } = await db.prepare(
@@ -585,6 +590,68 @@ async function drawSurveyLottery(db, admin, activity, now, seedBytes) {
   return { seed: seedHex, drawn_at: now, pool_size: rows.length, selected_count: selected, selected: ranked.slice(0, quota).map(r => `${r.class_code}-${r.seat_no}`) };
 }
 
+// ---------- 抽籤後手動遞補（依抽籤序，一次一位） ----------
+// 營隊（以學生為單位）：空缺 = 人數上限 − 目前錄取且參加的學生數；候選 = 未錄取、仍參加的學生，依抽籤序。
+// 講座（以班為單位）：空缺 = 優先名額 + 抽籤名額 − 目前優先錄取與抽籤錄取的班數；候選 = 未錄取的班，依抽籤序。
+// 空缺檢查與更新在同一個 UPDATE 敘述內，同時按兩次也只會遞補一位。
+const SURVEY_SELECTED = `(SELECT COUNT(*) FROM registration_students s2 JOIN registrations r2 ON r2.id = s2.registration_id
+  WHERE r2.activity_id = ?1 AND r2.status != 'cancelled' AND s2.status = 'active' AND s2.draw_result = 'selected')`;
+const LECTURE_TAKEN = `(SELECT COUNT(*) FROM registrations r2 WHERE r2.activity_id = ?1 AND r2.status IN ('priority','selected'))`;
+
+export async function backfillNext(db, admin, activityId, now = nowIso()) {
+  const a = await getActivity(db, activityId);
+  if (!a) throw new HttpError(404, '找不到此活動');
+  if (a.status !== 'drawn' || !a.lottery_at) throw new HttpError(409, '尚未抽籤，不需要遞補');
+  if (a.cancelled_at) throw new HttpError(409, '活動已取消');
+  const survey = a.kind === 'survey';
+  const [res] = await db.batch(survey ? [
+    db.prepare(
+      `UPDATE registration_students SET draw_result = 'selected', backfilled_at = ?2
+       WHERE id = (SELECT s.id FROM registration_students s JOIN registrations r ON r.id = s.registration_id
+                   WHERE r.activity_id = ?1 AND r.status != 'cancelled' AND s.status = 'active' AND s.draw_result = 'not_selected'
+                   ORDER BY s.draw_rank LIMIT 1)
+         AND (SELECT max_participants FROM activities WHERE id = ?1) > ${SURVEY_SELECTED}`
+    ).bind(activityId, now),
+    db.prepare(
+      `INSERT INTO audit_logs (actor_email, action, activity_id, details_json)
+       SELECT ?2, 'lottery_backfill', ?1, json_object('student_id', s.id, 'class_code', r.class_code, 'seat_no', s.seat_no, 'name', s.name, 'draw_rank', s.draw_rank)
+       FROM registration_students s JOIN registrations r ON r.id = s.registration_id
+       WHERE r.activity_id = ?1 AND s.backfilled_at = ?3 AND changes() = 1`
+    ).bind(activityId, admin.email, now)
+  ] : [
+    db.prepare(
+      `UPDATE registrations SET status = 'selected', backfilled_at = ?2
+       WHERE id = (SELECT id FROM registrations WHERE activity_id = ?1 AND status = 'not_selected' ORDER BY draw_rank LIMIT 1)
+         AND (SELECT priority_quota + lottery_quota FROM activities WHERE id = ?1) > ${LECTURE_TAKEN}`
+    ).bind(activityId, now),
+    db.prepare(
+      `INSERT INTO audit_logs (actor_email, action, activity_id, details_json)
+       SELECT ?2, 'lottery_backfill', ?1, json_object('registration_id', id, 'class_code', class_code, 'draw_rank', draw_rank)
+       FROM registrations WHERE activity_id = ?1 AND backfilled_at = ?3 AND changes() = 1`
+    ).bind(activityId, admin.email, now)
+  ]);
+  if (!res.meta.changes) {
+    const info = await backfillStatus(db, a);
+    throw new HttpError(409, info.vacancies ? '已沒有可遞補的候選者' : '目前沒有空出的名額');
+  }
+  const promoted = survey
+    ? await db.prepare(`SELECT r.class_code, s.seat_no, s.name, s.draw_rank FROM registration_students s JOIN registrations r ON r.id = s.registration_id WHERE r.activity_id = ?1 AND s.backfilled_at = ?2`).bind(activityId, now).first()
+    : await db.prepare(`SELECT class_code, draw_rank FROM registrations WHERE activity_id = ?1 AND backfilled_at = ?2`).bind(activityId, now).first();
+  return { promoted, ...(await backfillStatus(db, a)) };
+}
+
+export async function backfillStatus(db, a) {
+  if (a.kind === 'survey') {
+    const r = await db.prepare(`SELECT ${SURVEY_SELECTED} AS taken,
+      (SELECT COUNT(*) FROM registration_students s JOIN registrations r ON r.id = s.registration_id
+        WHERE r.activity_id = ?1 AND r.status != 'cancelled' AND s.status = 'active' AND s.draw_result = 'not_selected') AS waiting`).bind(a.id).first();
+    return { vacancies: Math.max(0, Number(a.max_participants) - r.taken), waiting: r.waiting };
+  }
+  const r = await db.prepare(`SELECT ${LECTURE_TAKEN} AS taken,
+    (SELECT COUNT(*) FROM registrations WHERE activity_id = ?1 AND status = 'not_selected') AS waiting`).bind(a.id).first();
+  return { vacancies: Math.max(0, Number(a.priority_quota) + Number(a.lottery_quota) - r.taken), waiting: r.waiting };
+}
+
 export async function rankPool(seedBytes, pool) {
   const key = await crypto.subtle.importKey('raw', seedBytes, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
   const enc = new TextEncoder();
@@ -613,7 +680,7 @@ const csvDoc = (head, lines) => '﻿' + [head.join(','), ...lines.map(l => l.map
 export function toCsv(rows) {
   const head = ['順序', '班級', '導師', 'Email', '隨班', '狀態', '抽籤排名', '報名時間（臺灣）', '備註'];
   return csvDoc(head, rows.map((r, i) => [i + 1, r.class_code, r.teacher_name, r.teacher_email, r.accompany === 'yes' ? '是' : '否',
-    CSV_STATUS[r.status] || r.status, r.draw_rank ?? '', taipei(r.submitted_at), r.notes]));
+    (r.status === 'selected' && r.backfilled_at ? '遞補錄取' : CSV_STATUS[r.status] || r.status), r.draw_rank ?? '', taipei(r.submitted_at), r.notes]));
 }
 
 // 意願調查：一位學生一列，供收費對帳。
@@ -627,7 +694,7 @@ export function toStudentsCsv(rows, activity = {}) {
   for (const r of [...rows].sort((x, y) => x.class_code.localeCompare(y.class_code))) {
     for (const s of r.students) {
       lines.push([r.class_code, s.seat_no, s.name, s.gender === 'M' ? '男' : '女', s.status === 'active' ? '參加' : '不參加',
-        ...(lottery ? [s.draw_result ? DRAW[s.draw_result] : '尚未抽籤', s.draw_rank ?? ''] : []),
+        ...(lottery ? [s.draw_result ? (s.draw_result === 'selected' && s.backfilled_at ? '錄取（遞補）' : DRAW[s.draw_result]) : '尚未抽籤', s.draw_rank ?? ''] : []),
         free ? '免費' : s.paid ? '已繳' : '未繳', free ? '' : taipei(s.paid_at), CSV_STATUS[r.status] || r.status, r.teacher_name, r.teacher_email,
         r.accompany === 'yes' ? '是' : '否', taipei(r.submitted_at), r.notes]);
     }

@@ -9,7 +9,7 @@ import {
   listPublicActivities, validateRegistration, register, listMyRegistrations,
   validateActivity, createActivity, updateActivity, setActivityStatus, getActivity, listAdminActivities,
   listRegistrations, cancelRegistration, drawLottery, toCsv, toStudentsCsv, toIcs, cancelActivity, deleteActivity,
-  withdrawStudent, restoreStudent, setStudentPaid, selfCancelRegistration
+  withdrawStudent, restoreStudent, setStudentPaid, selfCancelRegistration, openRegister, openCancel
 } from './activities.js';
 
 export default {
@@ -49,6 +49,9 @@ const ROUTES = [
   ['POST', /^\/api\/auth\/logout$/, logout],
   // 教師
   ['POST', /^\/api\/registrations$/, createRegistration],
+  // 免登入（僅限設定為「學生填寫・免登入」的營隊）
+  ['POST', /^\/api\/public\/registrations$/, publicRegistration],
+  ['POST', /^\/api\/public\/registrations\/cancel$/, publicCancel],
   ['GET', /^\/api\/my\/registrations$/, myRegistrations],
   ['POST', new RegExp(`^/api/registrations/${ID}/students/${SID}/withdraw$`), studentWithdraw],
   ['POST', new RegExp(`^/api/registrations/${ID}/cancel$`), selfCancel],
@@ -172,6 +175,15 @@ async function createRegistration({ request, env }) {
   const user = await requireUser(request, env);
   const input = validateRegistration(await readJson(request));
   return json({ registration: await register(requireDb(env), user, input) }, 201);
+}
+
+async function publicRegistration({ request, env }) {
+  return json(await openRegister(requireDb(env), await readJson(request)), 201);
+}
+
+async function publicCancel({ request, env }) {
+  await openCancel(requireDb(env), await readJson(request));
+  return json({ ok: true });
 }
 
 async function myRegistrations({ request, env }) {

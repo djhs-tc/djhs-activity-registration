@@ -309,3 +309,49 @@ test('concurrent student submissions for the same seat: only one succeeds', asyn
   const res = await Promise.all([1, 2, 3].map(i => call('/api/registrations', { body: stu(id, '801', 7, '同學' + i), as: `c${i}@st.tc.edu.tw` })));
   assert.deepEqual(res.map(r => r.status).sort(), [201, 409, 409]);
 });
+
+// ---------- 免登入自由報名（自填 Email） ----------
+const pub = (id, over = {}) => ({ activity_id: id, class_code: '701', seat_no: 3, name: '王小明', gender: '男', email: 'Kid@Gmail.com', notes: '', ...over });
+
+test('open registration: no login, email kept unverified, dedupe by email and seat, cancel code', async () => {
+  const { call, DB } = setup();
+  const id = await openSurvey(call, { fill_mode: 'open', max_students_per_class: 30, min_participants: 0 });
+  const act = (await call('/api/activities')).data.activities.find(a => a.id === id);
+  assert.deepEqual([act.fill_mode, act.login_required], ['student', 0]);
+
+  const r = await call('/api/public/registrations', { body: pub(id) });
+  assert.equal(r.status, 201, JSON.stringify(r.data));
+  assert.match(r.data.cancel_code, /^[A-HJ-NP-Z2-9]{8}$/);
+  const row = DB.raw.prepare('SELECT teacher_email, teacher_name, submitter, verified, cancel_hash FROM registrations').get();
+  assert.deepEqual([row.teacher_email, row.teacher_name, row.submitter, row.verified], ['kid@gmail.com', '王小明', 'student', 0]);
+  assert.ok(row.cancel_hash && row.cancel_hash !== r.data.cancel_code, 'only the hash is stored');
+
+  assert.match((await call('/api/public/registrations', { body: pub(id, { seat_no: 4 }) })).data.error, /這個 Email 已經報名過/);
+  assert.match((await call('/api/public/registrations', { body: pub(id, { email: 'other@gmail.com' }) })).data.error, /701 班 3 號已經有人報名/);
+  assert.match((await call('/api/public/registrations', { body: pub(id, { email: 'bad' }) })).data.error, /Email/);
+  assert.equal((await call('/api/public/registrations', { body: pub(id, { email: 'bot@x.com', seat_no: 9, website: 'http://spam' }) })).status, 400, 'honeypot');
+
+  // 取消：錯誤取消碼失敗；正確取消碼成功；之後可重新報名
+  assert.equal((await call('/api/public/registrations/cancel', { body: { activity_id: id, email: 'kid@gmail.com', code: 'AAAAAAAA' } })).status, 409);
+  assert.equal((await call('/api/public/registrations/cancel', { body: { activity_id: id, email: 'KID@gmail.com', code: r.data.cancel_code.toLowerCase() } })).status, 200);
+  assert.equal((await call('/api/public/registrations', { body: pub(id) })).status, 201);
+  const list = (await call(`/api/admin/activities/${id}/registrations`, { as: ADMIN })).data.registrations;
+  assert.ok(list.every(x => x.verified === 0));
+});
+
+test('open registration is refused for activities that require login', async () => {
+  const { call } = setup();
+  const loginStudent = await openSurvey(call, { fill_mode: 'student', min_participants: 0 });
+  const teacherFill = await openSurvey(call, { title: '導師填寫營隊', min_participants: 0 });
+  assert.equal((await call('/api/public/registrations', { body: pub(loginStudent) })).status, 404);
+  assert.equal((await call('/api/public/registrations', { body: pub(teacherFill) })).status, 404);
+});
+
+test('open mode cannot be switched once registrations exist', async () => {
+  const { call } = setup();
+  const id = await openSurvey(call, { fill_mode: 'open', min_participants: 0 });
+  await call('/api/public/registrations', { body: pub(id) });
+  const cur = (await call('/api/admin/activities', { as: ADMIN })).data.activities.find(a => a.id === id);
+  const res = await call(`/api/admin/activities/${id}`, { method: 'PUT', body: { ...surveyBody({ min_participants: 0, fill_mode: 'student' }), base: cur }, as: ADMIN });
+  assert.match(res.data.error, /不能切換填寫方式/);
+});

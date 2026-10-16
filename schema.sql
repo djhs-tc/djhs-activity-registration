@@ -33,7 +33,9 @@ CREATE TABLE IF NOT EXISTS activities (
  max_participants INTEGER NOT NULL DEFAULT 0,
  overflow_mode TEXT NOT NULL DEFAULT 'close' CHECK(overflow_mode IN ('close','lottery')),
  -- 營隊填寫方式：teacher 導師以班為單位填名單；student 學生一人一筆
- fill_mode TEXT NOT NULL DEFAULT 'teacher' CHECK(fill_mode IN ('teacher','student'))
+ fill_mode TEXT NOT NULL DEFAULT 'teacher' CHECK(fill_mode IN ('teacher','student')),
+ -- 學生填寫時是否需要登入：0 = 免登入自由報名（自填 Email，不驗證）
+ login_required INTEGER NOT NULL DEFAULT 1 CHECK(login_required IN (0,1))
 );
 CREATE TABLE IF NOT EXISTS registrations (
  id TEXT PRIMARY KEY,
@@ -47,7 +49,10 @@ CREATE TABLE IF NOT EXISTS registrations (
  submitted_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
  draw_rank INTEGER,
  -- 填寫人身分：teacher（teacher_name/email 為導師）或 student（teacher_name/email 為學生本人）
- submitter TEXT NOT NULL DEFAULT 'teacher' CHECK(submitter IN ('teacher','student'))
+ submitter TEXT NOT NULL DEFAULT 'teacher' CHECK(submitter IN ('teacher','student')),
+ -- 0 = Email 為免登入自填、未驗證；cancel_hash = 取消碼的 SHA-256（免登入報名用）
+ verified INTEGER NOT NULL DEFAULT 1 CHECK(verified IN (0,1)),
+ cancel_hash TEXT
 );
 -- 導師填寫：同一活動同一班級只能有一筆「未取消」的報名；取消後可重新報名。
 -- 學生填寫：一人一筆，由程式檢查同班同座號、同帳號不重複。

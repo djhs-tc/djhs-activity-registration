@@ -1,6 +1,6 @@
 import { HttpError, taipeiToUtcIso, nowIso } from './http.js';
 
-const ACTIVITY_COLUMNS = 'id, title, speaker, venue, audience, description, starts_at, ends_at, opens_at, deadline_at, priority_quota, lottery_quota, status, lottery_at, kind, max_students_per_class, organizer_name, cancelled_at, cancel_reason, fee, min_participants, max_participants, overflow_mode, fill_mode';
+const ACTIVITY_COLUMNS = 'id, title, speaker, venue, audience, description, starts_at, ends_at, opens_at, deadline_at, priority_quota, lottery_quota, status, lottery_at, kind, max_students_per_class, organizer_name, cancelled_at, cancel_reason, fee, min_participants, max_participants, overflow_mode, fill_mode, login_required';
 const ACTIVE = "status != 'cancelled'";
 // 班級代碼：年級 7–9 + 班號 01–30，例如 701、815。
 export const CLASS_CODE = /^[789](0[1-9]|[12]\d|30)$/;
@@ -64,7 +64,8 @@ export function validateStudents(list) {
 const CLASS_STUDENTS = (alias, extra = '') => `(SELECT COUNT(*) FROM registration_students s3 JOIN registrations r4 ON r4.id = s3.registration_id
   WHERE r4.activity_id = ${alias}.id AND r4.class_code = ?2 AND r4.status != 'cancelled' AND s3.status = 'active'${extra})`;
 
-export async function register(db, user, input, now = nowIso()) {
+export async function register(db, user, input, now = nowIso(), opts = {}) {
+  const verified = opts.verified === 0 ? 0 : 1;
   input = { ...input, students: input.students || [] };
   const activity = await db.prepare('SELECT kind, fill_mode, max_students_per_class, max_participants, overflow_mode FROM activities WHERE id = ?1').bind(input.activityId).first();
   const studentFill = Boolean(activity && activity.kind === 'survey' && activity.fill_mode === 'student');
@@ -86,21 +87,22 @@ export async function register(db, user, input, now = nowIso()) {
   try {
     results = await db.batch([
       db.prepare(
-        `INSERT INTO registrations (id, activity_id, class_code, teacher_name, teacher_email, accompany, notes, status, submitted_at, submitter)
+        `INSERT INTO registrations (id, activity_id, class_code, teacher_name, teacher_email, accompany, notes, status, submitted_at, submitter, verified, cancel_hash)
          SELECT ?1, a.id, ?2, ?3, ?4, ?5, ?6,
                 CASE WHEN a.kind = 'survey' THEN 'pending'
                      WHEN (SELECT COUNT(*) FROM registrations r WHERE r.activity_id = a.id AND r.${ACTIVE}) < a.priority_quota
                      THEN 'priority' ELSE 'lottery_pool' END,
-                ?7, ?10
+                ?7, ?10, ?12, ?13
          FROM activities a
          WHERE a.id = ?8 AND a.status = 'open' AND a.opens_at <= ?7 AND a.deadline_at > ?7
+           AND (?12 = 1 OR (a.login_required = 0 AND a.fill_mode = 'student'))
            AND (a.kind != 'survey' OR a.max_participants = 0 OR a.overflow_mode = 'lottery' OR ${ACTIVE_STUDENTS('a')} + ?9 <= a.max_participants)
            AND (?10 = 'teacher' OR (
              a.fill_mode = 'student'
              AND NOT EXISTS (SELECT 1 FROM registrations r2 WHERE r2.activity_id = a.id AND r2.teacher_email = ?4 AND r2.status != 'cancelled' AND r2.submitter = 'student')
              AND ${CLASS_STUDENTS('a', ' AND s3.seat_no = ?11')} = 0
              AND (a.max_students_per_class IS NULL OR ${CLASS_STUDENTS('a')} < a.max_students_per_class)))`
-      ).bind(id, input.classCode, input.teacherName, user.email, input.accompany, input.notes, now, input.activityId, input.students.length, submitter, seat),
+      ).bind(id, input.classCode, input.teacherName, user.email, input.accompany, input.notes, now, input.activityId, input.students.length, submitter, seat, verified, opts.cancelHash || null),
       db.prepare(
         `INSERT INTO registration_students (registration_id, seat_no, name, gender)
          SELECT ?1, json_extract(j.value, '$.seat_no'), json_extract(j.value, '$.name'), json_extract(j.value, '$.gender')
@@ -122,7 +124,7 @@ export async function register(db, user, input, now = nowIso()) {
     if (now < a.opens_at) throw new HttpError(409, '尚未開放報名');
     if (studentFill && a.status === 'open' && now < a.deadline_at) {
       const mine = await db.prepare(`SELECT class_code FROM registrations WHERE activity_id = ?1 AND teacher_email = ?2 AND status != 'cancelled' AND submitter = 'student'`).bind(input.activityId, user.email).first();
-      if (mine) throw new HttpError(409, `您已經報名過此營隊（${mine.class_code} 班）。如需更改，請先到「我的報名」取消後再重新報名。`);
+      if (mine) throw new HttpError(409, verified ? `您已經報名過此營隊（${mine.class_code} 班）。如需更改，請先到「我的報名」取消後再重新報名。` : `這個 Email 已經報名過此營隊（${mine.class_code} 班）。如需更改，請用取消碼取消後再重新報名。`);
       const { taken, inClass } = await db.prepare(
         `SELECT ${CLASS_STUDENTS('a', ' AND s3.seat_no = ?3')} AS taken, ${CLASS_STUDENTS('a')} AS inClass FROM activities a WHERE a.id = ?1`
       ).bind(input.activityId, input.classCode, seat).first();
@@ -159,6 +161,52 @@ function attachStudents(regs, students) {
   const by = new Map(regs.map(r => [r.id, Object.assign(r, { students: [] })]));
   for (const s of students) by.get(s.registration_id)?.students.push(s);
   return regs;
+}
+
+// ---------- 免登入自由報名（學生自填 Email 留存，不驗證） ----------
+const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // 去除易混淆的 I O 0 1
+async function sha256Hex(text) {
+  return [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text)))].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+const OPEN_EMAIL = /^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$/;
+
+export async function openRegister(db, body, now = nowIso()) {
+  if (String(body.website || '')) throw new HttpError(400, '資料格式錯誤'); // 隱藏欄位：真人不會填
+  const email = String(body.email || '').trim().toLowerCase();
+  if (!OPEN_EMAIL.test(email) || email.length > 100) throw new HttpError(400, '請填寫正確的 Email');
+  const activityId = String(body.activity_id || '');
+  const activity = await db.prepare('SELECT kind, fill_mode, login_required FROM activities WHERE id = ?1').bind(activityId).first();
+  if (!activity || activity.kind !== 'survey' || activity.fill_mode !== 'student' || Number(activity.login_required) !== 0) throw new HttpError(404, '此活動不開放免登入報名');
+  const classCode = String(body.class_code || '').trim();
+  if (!CLASS_CODE.test(classCode)) throw new HttpError(400, '班級格式錯誤，請輸入如 701、815 的三位數班級');
+  const notes = String(body.notes || '').trim();
+  if (notes.length > 200) throw new HttpError(400, '備註請在 200 字以內');
+  const students = validateStudents([{ seat_no: body.seat_no, name: body.name, gender: body.gender }]);
+  const code = [...crypto.getRandomValues(new Uint8Array(8))].map(b => CODE_ALPHABET[b % CODE_ALPHABET.length]).join('');
+  const registration = await register(db, { email }, { activityId, classCode, teacherName: students[0].name, accompany: 'no', notes, students }, now,
+    { verified: 0, cancelHash: await sha256Hex(code) });
+  return { registration, cancel_code: code };
+}
+
+// 免登入報名的取消：Email + 取消碼，報名截止前有效
+export async function openCancel(db, body, now = nowIso()) {
+  const email = String(body.email || '').trim().toLowerCase();
+  const code = String(body.code || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+  if (!email || code.length !== 8) throw new HttpError(400, '請輸入報名時的 Email 與 8 碼取消碼');
+  const hash = await sha256Hex(code);
+  const [res] = await db.batch([
+    db.prepare(
+      `UPDATE registrations SET status = 'cancelled'
+       WHERE activity_id = ?1 AND teacher_email = ?2 AND cancel_hash = ?3 AND verified = 0 AND status != 'cancelled'
+         AND EXISTS (SELECT 1 FROM activities a WHERE a.id = ?1 AND a.status = 'open' AND a.deadline_at > ?4 AND a.cancelled_at IS NULL)`
+    ).bind(String(body.activity_id || ''), email, hash, now),
+    db.prepare(
+      `INSERT INTO audit_logs (actor_email, action, activity_id, details_json)
+       SELECT ?2, 'registration_cancel', activity_id, json_object('registration_id', id, 'class_code', class_code, 'reason', 'self (cancel code)')
+       FROM registrations WHERE activity_id = ?1 AND teacher_email = ?2 AND cancel_hash = ?3 AND status = 'cancelled' AND changes() = 1`
+    ).bind(String(body.activity_id || ''), email, hash)
+  ]);
+  if (!res.meta.changes) throw new HttpError(409, '取消失敗：Email 或取消碼不正確，或報名已截止');
 }
 
 // 學生填寫的報名：本人在報名截止前可自行取消（取消後可重新報名）；截止後請洽承辦人。
@@ -264,7 +312,8 @@ export function validateActivity(body) {
     fee: survey ? intIn('fee', 0, 100000) : 0, min_participants: survey ? intIn('min_participants', 0, 2000) : 0,
     max_participants: survey ? intIn('max_participants', 0, 2000) : 0,
     overflow_mode: survey && body.overflow_mode === 'lottery' ? 'lottery' : 'close',
-    fill_mode: survey && body.fill_mode === 'student' ? 'student' : 'teacher',
+    fill_mode: survey && ['student', 'open'].includes(body.fill_mode) ? 'student' : 'teacher',
+    login_required: survey && body.fill_mode === 'open' ? 0 : 1,
     organizer_name: text('organizer_name', 30, true), organizer_email: organizerEmail(body.organizer_email)
   };
   if (a.ends_at <= a.starts_at) throw new HttpError(400, '活動結束時間必須晚於開始時間');
@@ -289,9 +338,9 @@ export async function createActivity(db, admin, a) {
   const id = crypto.randomUUID();
   await db.batch([
     db.prepare(
-      `INSERT INTO activities (id, title, speaker, venue, audience, description, starts_at, ends_at, opens_at, deadline_at, priority_quota, lottery_quota, status, created_by, kind, max_students_per_class, organizer_name, organizer_email, fee, min_participants, max_participants, overflow_mode, fill_mode)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'draft', ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)`
-    ).bind(id, a.title, a.speaker, a.venue, a.audience, a.description, a.starts_at, a.ends_at, a.opens_at, a.deadline_at, a.priority_quota, a.lottery_quota, admin.email, a.kind, a.max_students_per_class, a.organizer_name, a.organizer_email, a.fee, a.min_participants, a.max_participants, a.overflow_mode, a.fill_mode),
+      `INSERT INTO activities (id, title, speaker, venue, audience, description, starts_at, ends_at, opens_at, deadline_at, priority_quota, lottery_quota, status, created_by, kind, max_students_per_class, organizer_name, organizer_email, fee, min_participants, max_participants, overflow_mode, fill_mode, login_required)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'draft', ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)`
+    ).bind(id, a.title, a.speaker, a.venue, a.audience, a.description, a.starts_at, a.ends_at, a.opens_at, a.deadline_at, a.priority_quota, a.lottery_quota, admin.email, a.kind, a.max_students_per_class, a.organizer_name, a.organizer_email, a.fee, a.min_participants, a.max_participants, a.overflow_mode, a.fill_mode, a.login_required),
     audit(db, admin.email, 'activity_create', id, a)
   ]);
   return getActivity(db, id);
@@ -312,14 +361,14 @@ export async function updateActivity(db, admin, id, a, base) {
   if (before.lottery_at || !EDITABLE.includes(before.status)) throw new HttpError(409, '已抽籤或已封存的活動不可修改');
   // 活動類型建立後不可變更（講座與意願調查的報名資料結構不同）
   if (a.kind !== before.kind) throw new HttpError(409, '活動類型建立後不可變更');
-  if (a.fill_mode !== before.fill_mode && (await db.prepare('SELECT 1 AS x FROM registrations WHERE activity_id = ?1 LIMIT 1').bind(id).first())) {
+  if ((a.fill_mode !== before.fill_mode || Number(a.login_required) !== Number(before.login_required)) && (await db.prepare('SELECT 1 AS x FROM registrations WHERE activity_id = ?1 LIMIT 1').bind(id).first())) {
     throw new HttpError(409, '已有報名資料，不能切換填寫方式（導師填寫／學生填寫）');
   }
   const [res] = await db.batch([
     db.prepare(
-      `UPDATE activities SET title=?2, speaker=?3, venue=?4, audience=?5, description=?6, starts_at=?7, ends_at=?8, opens_at=?9, deadline_at=?10, priority_quota=?11, lottery_quota=?12, max_students_per_class=?13, organizer_name=?14, organizer_email=?15, fee=?16, min_participants=?17, max_participants=?18, overflow_mode=?19, fill_mode=?20
+      `UPDATE activities SET title=?2, speaker=?3, venue=?4, audience=?5, description=?6, starts_at=?7, ends_at=?8, opens_at=?9, deadline_at=?10, priority_quota=?11, lottery_quota=?12, max_students_per_class=?13, organizer_name=?14, organizer_email=?15, fee=?16, min_participants=?17, max_participants=?18, overflow_mode=?19, fill_mode=?20, login_required=?21
        WHERE id = ?1 AND status IN ('draft','open','closed') AND lottery_at IS NULL`
-    ).bind(id, a.title, a.speaker, a.venue, a.audience, a.description, a.starts_at, a.ends_at, a.opens_at, a.deadline_at, a.priority_quota, a.lottery_quota, a.max_students_per_class, a.organizer_name, a.organizer_email, a.fee, a.min_participants, a.max_participants, a.overflow_mode, a.fill_mode),
+    ).bind(id, a.title, a.speaker, a.venue, a.audience, a.description, a.starts_at, a.ends_at, a.opens_at, a.deadline_at, a.priority_quota, a.lottery_quota, a.max_students_per_class, a.organizer_name, a.organizer_email, a.fee, a.min_participants, a.max_participants, a.overflow_mode, a.fill_mode, a.login_required),
     db.prepare(
       `INSERT INTO audit_logs (actor_email, action, activity_id, details_json) SELECT ?1, 'activity_update', ?2, ?3 WHERE changes() = 1`
     ).bind(admin.email, id, JSON.stringify({ before: pick(before), after: a })),
@@ -329,7 +378,7 @@ export async function updateActivity(db, admin, id, a, base) {
   return getActivity(db, id);
 }
 const EDITABLE = ['draft', 'open', 'closed'];
-const pick = r => Object.fromEntries(['title', 'speaker', 'venue', 'audience', 'description', 'starts_at', 'ends_at', 'opens_at', 'deadline_at', 'priority_quota', 'lottery_quota', 'kind', 'max_students_per_class', 'organizer_name', 'organizer_email', 'fee', 'min_participants', 'max_participants', 'overflow_mode', 'fill_mode'].map(k => [k, r[k]]));
+const pick = r => Object.fromEntries(['title', 'speaker', 'venue', 'audience', 'description', 'starts_at', 'ends_at', 'opens_at', 'deadline_at', 'priority_quota', 'lottery_quota', 'kind', 'max_students_per_class', 'organizer_name', 'organizer_email', 'fee', 'min_participants', 'max_participants', 'overflow_mode', 'fill_mode', 'login_required'].map(k => [k, r[k]]));
 
 // 抽籤前的單一規則：有效報名（priority + lottery_pool）依送出時間排序，前 N 班為 priority，其餘為 lottery_pool。
 // 回傳兩個敘述，放進同一個 batch（交易）：先記錄將變動的班級，再更新狀態。
@@ -433,7 +482,7 @@ export async function listAdminActivities(db) {
 
 export async function listRegistrations(db, activityId) {
   const { results } = await db.prepare(
-    `SELECT id, class_code, teacher_name, teacher_email, accompany, notes, status, submitted_at, draw_rank, submitter
+    `SELECT id, class_code, teacher_name, teacher_email, accompany, notes, status, submitted_at, draw_rank, submitter, verified
      FROM registrations WHERE activity_id = ?1 ORDER BY submitted_at ASC, rowid ASC`
   ).bind(activityId).all();
   const { results: students } = await db.prepare(

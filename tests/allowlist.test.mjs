@@ -91,3 +91,29 @@ test('school accounts still log in without being listed', async () => {
   assert.equal((await login('t1@st.tc.edu.tw')).status, 200);
   assert.equal((await login(ADMIN)).data.user.isAdmin, true);
 });
+
+test('batch add: all-or-nothing validation, skips existing and duplicates, audits each new email', async () => {
+  const { call, DB } = setup();
+  const batch = entries => call('/api/admin/allowed-emails/batch', { body: { entries }, as: ADMIN });
+  await call('/api/admin/allowed-emails', { body: { email: 'old@gmail.com', note: '舊' }, as: ADMIN });
+
+  const bad = await batch([{ email: 'a@gmail.com', note: '甲' }, { email: 'oops', note: '乙' }, { email: 'x@st.tc.edu.tw', note: '丙' }]);
+  assert.equal(bad.status, 400);
+  assert.match(bad.data.error, /整批未加入/);
+  assert.match(bad.data.error, /第 2 筆（oops）/);
+  assert.match(bad.data.error, /第 3 筆.*學校帳號/);
+  assert.equal(DB.raw.prepare('SELECT COUNT(*) n FROM allowed_emails').get().n, 1, 'nothing added on error');
+
+  const ok = await batch([{ email: 'A@gmail.com', note: '甲' }, { email: 'b@hotmail.com', note: '乙' }, { email: 'a@gmail.com', note: '甲重複' }, { email: 'OLD@gmail.com', note: '舊' }]);
+  assert.equal(ok.status, 200);
+  assert.deepEqual(ok.data.result, { added: ['a@gmail.com', 'b@hotmail.com'], skipped_existing: ['old@gmail.com'], skipped_duplicates: 1 });
+  assert.equal(DB.raw.prepare(`SELECT note FROM allowed_emails WHERE email='a@gmail.com'`).get().note, '甲');
+  assert.equal(DB.raw.prepare(`SELECT COUNT(*) n FROM audit_logs WHERE action='allowlist_add'`).get().n, 3);
+
+  assert.equal((await batch([])).status, 400);
+  assert.match((await batch(Array.from({ length: 301 }, (_, i) => ({ email: `t${i}@gmail.com`, note: 'n' })))).data.error, /最多 300/);
+  assert.equal((await call('/api/admin/allowed-emails/batch', { body: { entries: [{ email: 'c@gmail.com', note: 'n' }] }, as: 't@st.tc.edu.tw' })).status, 403);
+  const big = await batch(Array.from({ length: 300 }, (_, i) => ({ email: `teacher.number.${i}@gmail.com`, note: `第${i}位老師 七年級導師` })));
+  assert.equal(big.status, 200);
+  assert.equal(big.data.result.added.length, 300);
+});

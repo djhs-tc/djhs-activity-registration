@@ -53,6 +53,7 @@ GitHub main 推送 ──► Cloudflare Workers Builds（deploy command: npx wra
 | POST | `/api/admin/registrations/:rid/students/:sid/restore` | 管理員 | 恢復學生為參加 |
 | POST | `/api/admin/registrations/:rid/students/:sid/paid` | 管理員 | 登記繳費 `{paid: true/false}` |
 | GET / POST | `/api/admin/allowed-emails` | 管理員 | 帳號名單：列出／加入個人信箱 `{email, note}` |
+| POST | `/api/admin/allowed-emails/batch` | 管理員 | 批次加入 `{entries: [{email, note}]}`，最多 300 筆；任一筆有誤整批不加入，已存在者略過 |
 | POST | `/api/admin/allowed-emails/remove` | 管理員 | 從帳號名單移除 `{email}`（立即失效） |
 
 所有 POST／PUT 必須同源（`Origin` 檢查）且為 `application/json`，否則回 403／415。所有時間以 UTC ISO 字串儲存，畫面與輸入一律為臺灣時間（UTC+8）。
@@ -124,7 +125,7 @@ npx wrangler dev --local
 
 ## 上線前測試清單
 
-- [x] `npm test` 全部通過（48 項，含營隊意願調查、帳號名單）
+- [x] `npm test` 全部通過（49 項，含營隊意願調查、帳號名單）
 - [x] 本機 `wrangler dev` 端到端：草稿不可報名、優先名額、重複報名、取消、截止前不可抽籤、截止後不可報名、同時抽籤僅一次成功、稽核紀錄筆數正確
 - [x] `@st.tc.edu.tw`、`@tjjh.tc.edu.tw` 帳號可登入；個人 Gmail 被拒絕；`audit_logs` 有 login 紀錄
 - [ ] `scripts/verify-live.sh` 全部 PASS（每次部署後）

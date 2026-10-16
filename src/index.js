@@ -2,7 +2,7 @@ import {
   AuthError, authConfig, verifyGoogleIdToken, signSession, readSession, randomToken, isSchoolEmail,
   getCookie, setCookie, SESSION_COOKIE, NONCE_COOKIE, SESSION_TTL_S, NONCE_TTL_S
 } from './auth.js';
-import { isAllowedEmail, listAllowedEmails, addAllowedEmail, removeAllowedEmail } from './allowlist.js';
+import { isAllowedEmail, listAllowedEmails, addAllowedEmail, addAllowedEmailsBatch, removeAllowedEmail } from './allowlist.js';
 import { HttpError, json, readJson, nowIso } from './http.js';
 import {
   listPublicActivities, validateRegistration, register, listMyRegistrations,
@@ -63,6 +63,7 @@ const ROUTES = [
   ['POST', new RegExp(`^/api/admin/registrations/${ID}/students/${SID}/paid$`), adminStudentPaid],
   ['GET', /^\/api\/admin\/allowed-emails$/, adminListAllowed],
   ['POST', /^\/api\/admin\/allowed-emails$/, adminAddAllowed],
+  ['POST', /^\/api\/admin\/allowed-emails\/batch$/, adminBatchAllowed],
   ['POST', /^\/api\/admin\/allowed-emails\/remove$/, adminRemoveAllowed]
 ];
 
@@ -267,6 +268,12 @@ async function adminAddAllowed({ request, env }) {
   const { email, note } = await readJson(request);
   await addAllowedEmail(requireDb(env), admin, email, note, authConfig(env).domains);
   return json({ ok: true }, 201);
+}
+
+async function adminBatchAllowed({ request, env }) {
+  const admin = await requireAdmin(request, env);
+  const { entries } = await readJson(request);
+  return json({ result: await addAllowedEmailsBatch(requireDb(env), admin, entries, authConfig(env).domains) });
 }
 
 async function adminRemoveAllowed({ request, env }) {

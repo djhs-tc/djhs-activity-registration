@@ -15,7 +15,7 @@ export function json(body, status = 200, extraHeaders) {
 
 export async function readJson(request) {
   const text = await request.text();
-  if (text.length > 16384) throw new HttpError(413, '資料過大');
+  if (text.length > 65536) throw new HttpError(413, '資料過大');
   try {
     const body = JSON.parse(text);
     if (body && typeof body === 'object' && !Array.isArray(body)) return body;

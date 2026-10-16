@@ -31,7 +31,9 @@ CREATE TABLE IF NOT EXISTS activities (
  min_participants INTEGER NOT NULL DEFAULT 0,
  -- 人數上限（全校合計，0 = 不限）與額滿處理：close 額滿即截止；lottery 截止後以學生為單位抽籤
  max_participants INTEGER NOT NULL DEFAULT 0,
- overflow_mode TEXT NOT NULL DEFAULT 'close' CHECK(overflow_mode IN ('close','lottery'))
+ overflow_mode TEXT NOT NULL DEFAULT 'close' CHECK(overflow_mode IN ('close','lottery')),
+ -- 營隊填寫方式：teacher 導師以班為單位填名單；student 學生一人一筆
+ fill_mode TEXT NOT NULL DEFAULT 'teacher' CHECK(fill_mode IN ('teacher','student'))
 );
 CREATE TABLE IF NOT EXISTS registrations (
  id TEXT PRIMARY KEY,
@@ -43,10 +45,13 @@ CREATE TABLE IF NOT EXISTS registrations (
  notes TEXT NOT NULL DEFAULT '',
  status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('priority','lottery_pool','selected','not_selected','cancelled','pending')),
  submitted_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
- draw_rank INTEGER
+ draw_rank INTEGER,
+ -- 填寫人身分：teacher（teacher_name/email 為導師）或 student（teacher_name/email 為學生本人）
+ submitter TEXT NOT NULL DEFAULT 'teacher' CHECK(submitter IN ('teacher','student'))
 );
--- 同一活動同一班級只能有一筆「未取消」的報名；取消後可重新報名。
-CREATE UNIQUE INDEX IF NOT EXISTS uq_reg_active_class ON registrations(activity_id, class_code) WHERE status != 'cancelled';
+-- 導師填寫：同一活動同一班級只能有一筆「未取消」的報名；取消後可重新報名。
+-- 學生填寫：一人一筆，由程式檢查同班同座號、同帳號不重複。
+CREATE UNIQUE INDEX IF NOT EXISTS uq_reg_active_class_teacher ON registrations(activity_id, class_code) WHERE status != 'cancelled' AND submitter = 'teacher';
 CREATE INDEX IF NOT EXISTS idx_reg_activity_time ON registrations(activity_id, submitted_at, id);
 CREATE INDEX IF NOT EXISTS idx_reg_email ON registrations(teacher_email);
 -- 意願調查的學生名單（個資：僅送出的導師與管理員可見）

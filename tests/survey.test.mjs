@@ -251,3 +251,61 @@ test('lottery mode under the cap selects everyone; close mode cannot be drawn', 
   DB.raw.prepare(`UPDATE activities SET deadline_at = '2020-01-01T00:00:00.000Z' WHERE id = ?`).run(id2);
   assert.match((await call(`/api/admin/activities/${id2}/draw`, { body: {}, as: ADMIN })).data.error, /不需要抽籤/);
 });
+
+// ---------- 學生填寫（一人一筆） ----------
+const stu = (id, code, seat, name, gender = '女') => ({ activity_id: id, class_code: code, teacher_name: 'x', accompany: 'yes', notes: '', students: [{ seat_no: seat, name, gender }] });
+
+test('student fill mode: one registration per account, unique class+seat, per-class cap, self cancel', async () => {
+  const { call, DB } = setup();
+  const id = await openSurvey(call, { fill_mode: 'student', max_students_per_class: 2, min_participants: 0 });
+  assert.equal((await call('/api/activities')).data.activities.find(a => a.id === id).fill_mode, 'student');
+  // 一次只能一人
+  assert.match((await call('/api/registrations', { body: reg(id, '701'), as: 's1@st.tc.edu.tw' })).data.error, /一次只能報名一人/);
+  const r1 = await call('/api/registrations', { body: stu(id, '701', 3, '王小明', '男'), as: 's1@st.tc.edu.tw' });
+  assert.equal(r1.status, 201, JSON.stringify(r1.data));
+  // 同帳號第二次
+  assert.match((await call('/api/registrations', { body: stu(id, '702', 4, '王小明'), as: 's1@st.tc.edu.tw' })).data.error, /已經報名過此營隊（701 班）/);
+  // 同班同座號
+  assert.match((await call('/api/registrations', { body: stu(id, '701', 3, '冒名'), as: 's2@st.tc.edu.tw' })).data.error, /701 班 3 號已經有人報名/);
+  // 同班不同座號 OK，達每班上限 2 人後拒絕
+  assert.equal((await call('/api/registrations', { body: stu(id, '701', 5, '李小華'), as: 's2@st.tc.edu.tw' })).status, 201);
+  assert.match((await call('/api/registrations', { body: stu(id, '701', 6, '陳同學'), as: 's3@st.tc.edu.tw' })).data.error, /已達上限 2 人/);
+  // 填寫人姓名＝學生姓名、submitter=student
+  const row = DB.raw.prepare(`SELECT teacher_name, submitter, accompany FROM registrations WHERE teacher_email = 's1@st.tc.edu.tw'`).get();
+  assert.deepEqual({ ...row }, { teacher_name: '王小明', submitter: 'student', accompany: 'no' });
+  // 他人不能取消；本人可取消並重新報名
+  const mine = (await call('/api/my/registrations', { as: 's1@st.tc.edu.tw' })).data.registrations[0];
+  assert.equal(mine.fill_mode, 'student');
+  assert.equal((await call(`/api/registrations/${mine.id}/cancel`, { body: {}, as: 's2@st.tc.edu.tw' })).status, 409);
+  assert.equal((await call(`/api/registrations/${mine.id}/cancel`, { body: {}, as: 's1@st.tc.edu.tw' })).status, 200);
+  assert.equal((await call(`/api/registrations/${mine.id}/cancel`, { body: {}, as: 's1@st.tc.edu.tw' })).status, 409);
+  assert.equal((await call('/api/registrations', { body: stu(id, '701', 3, '王小明', '男'), as: 's1@st.tc.edu.tw' })).status, 201, 're-register after self cancel');
+  // 截止後不能自行取消
+  const again = (await call('/api/my/registrations', { as: 's1@st.tc.edu.tw' })).data.registrations.find(r => r.status !== 'cancelled');
+  DB.raw.prepare(`UPDATE activities SET deadline_at = '2020-01-01T00:00:00.000Z' WHERE id = ?`).run(id);
+  assert.equal((await call(`/api/registrations/${again.id}/cancel`, { body: {}, as: 's1@st.tc.edu.tw' })).status, 409);
+  const adm = (await call('/api/admin/activities', { as: ADMIN })).data.activities.find(a => a.id === id);
+  assert.deepEqual([adm.student_count, adm.male_count, adm.female_count], [2, 1, 1]);
+  const csv = (await call(`/api/admin/activities/${id}/registrations.csv`, { as: ADMIN })).data;
+  assert.match(csv, /填寫人/);
+});
+
+test('teacher fill mode cannot self-cancel; fill mode locked once registrations exist', async () => {
+  const { call } = setup();
+  const id = await openSurvey(call, { min_participants: 0 });
+  const r = await call('/api/registrations', { body: reg(id, '701'), as: T1 });
+  assert.equal((await call(`/api/registrations/${r.data.registration.id}/cancel`, { body: {}, as: T1 })).status, 409);
+  // 兩個導師填寫的班仍不能重複
+  assert.equal((await call('/api/registrations', { body: reg(id, '701'), as: T2 })).status, 409);
+  const cur = (await call('/api/admin/activities', { as: ADMIN })).data.activities.find(a => a.id === id);
+  const res = await call(`/api/admin/activities/${id}`, { method: 'PUT', body: { ...surveyBody({ min_participants: 0, fill_mode: 'student' }), base: cur }, as: ADMIN });
+  assert.equal(res.status, 409);
+  assert.match(res.data.error, /不能切換填寫方式/);
+});
+
+test('concurrent student submissions for the same seat: only one succeeds', async () => {
+  const { call } = setup();
+  const id = await openSurvey(call, { fill_mode: 'student', min_participants: 0 });
+  const res = await Promise.all([1, 2, 3].map(i => call('/api/registrations', { body: stu(id, '801', 7, '同學' + i), as: `c${i}@st.tc.edu.tw` })));
+  assert.deepEqual(res.map(r => r.status).sort(), [201, 409, 409]);
+});

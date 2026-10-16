@@ -9,7 +9,7 @@ import {
   listPublicActivities, validateRegistration, register, listMyRegistrations,
   validateActivity, createActivity, updateActivity, setActivityStatus, getActivity, listAdminActivities,
   listRegistrations, cancelRegistration, drawLottery, toCsv, toStudentsCsv, toIcs, cancelActivity, deleteActivity,
-  withdrawStudent, restoreStudent, setStudentPaid
+  withdrawStudent, restoreStudent, setStudentPaid, selfCancelRegistration
 } from './activities.js';
 
 export default {
@@ -51,6 +51,7 @@ const ROUTES = [
   ['POST', /^\/api\/registrations$/, createRegistration],
   ['GET', /^\/api\/my\/registrations$/, myRegistrations],
   ['POST', new RegExp(`^/api/registrations/${ID}/students/${SID}/withdraw$`), studentWithdraw],
+  ['POST', new RegExp(`^/api/registrations/${ID}/cancel$`), selfCancel],
   // 管理員
   ['GET', /^\/api\/admin\/activities$/, adminListActivities],
   ['POST', /^\/api\/admin\/activities$/, adminCreateActivity],
@@ -176,6 +177,14 @@ async function createRegistration({ request, env }) {
 async function myRegistrations({ request, env }) {
   const user = await requireUser(request, env);
   return json({ registrations: await listMyRegistrations(requireDb(env), user.email) });
+}
+
+// 學生本人取消自己的報名（學生填寫模式、截止前）
+async function selfCancel({ request, env, params }) {
+  const user = await requireUser(request, env);
+  await readJson(request);
+  await selfCancelRegistration(requireDb(env), user, params[0]);
+  return json({ ok: true });
 }
 
 // 導師（截止前、限自己送出的報名）或管理員：標記學生不參加

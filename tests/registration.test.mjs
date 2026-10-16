@@ -373,3 +373,15 @@ test('delete activity: only when there were never any registrations; audited', a
   assert.equal((await call(`/api/admin/activities/${id}/delete`, { method: 'POST', body: {}, as: ADMIN })).status, 409);
   assert.equal((await current(call, id)).total_registrations, 1);
 });
+
+test('lottery is allowed before the deadline once registration is closed early', async () => {
+  const DB = createD1();
+  DB.raw.prepare(`INSERT INTO activities (id,title,starts_at,ends_at,opens_at,deadline_at,priority_quota,lottery_quota,status,created_by)
+    VALUES ('A','t','2026-11-12T06:00:00.000Z','2026-11-12T08:00:00.000Z','2026-10-16T00:00:00.000Z','2026-11-06T04:00:00.000Z',1,1,'open','x')`).run();
+  for (let i = 1; i <= 3; i++) await register(DB, { email: teacher(i) }, { activityId: 'A', classCode: String(700 + i), teacherName: 'n', accompany: 'no', notes: '' }, '2026-10-20T00:00:00.000Z');
+  await assert.rejects(drawLottery(DB, { email: ADMIN }, 'A', '2026-10-21T00:00:00.000Z'), /關閉報名/);
+  DB.raw.prepare(`UPDATE activities SET status = 'closed' WHERE id = 'A'`).run();
+  const r = await drawLottery(DB, { email: ADMIN }, 'A', '2026-10-21T00:00:00.000Z');
+  assert.equal(r.selected.length, 1);
+  assert.equal(DB.raw.prepare(`SELECT status FROM activities WHERE id='A'`).get().status, 'drawn');
+});

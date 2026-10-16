@@ -515,7 +515,8 @@ export async function drawLottery(db, admin, activityId, now = nowIso(), seedByt
   if (activity.cancelled_at) throw new HttpError(409, '活動已取消，不能抽籤');
   if (activity.lottery_at) throw new HttpError(409, '此活動已經抽過籤，不可重複抽籤');
   if (!['open', 'closed'].includes(activity.status)) throw new HttpError(409, '活動狀態不允許抽籤');
-  if (now < activity.deadline_at) throw new HttpError(409, '報名尚未截止，不能抽籤');
+  // 報名截止時間已到，或管理員已提前「關閉報名」，即可抽籤（抽籤後狀態為已抽籤，不能再重新開放）
+  if (now < activity.deadline_at && activity.status !== 'closed') throw new HttpError(409, '報名尚未截止，不能抽籤（如要提前抽籤，請先在活動管理按「關閉報名」）');
 
   const { results: pool } = await db.prepare(
     `SELECT id, class_code FROM registrations WHERE activity_id = ?1 AND status = 'lottery_pool' ORDER BY id`
@@ -527,7 +528,7 @@ export async function drawLottery(db, admin, activityId, now = nowIso(), seedByt
   // 以 lottery_at = 本次時間戳作為鎖：只有第一個成功設定的請求，其後續 UPDATE 條件才會成立。
   const guard = `(SELECT lottery_at FROM activities WHERE id = ?2) = ?3`;
   const stmts = [
-    db.prepare(`UPDATE activities SET lottery_at = ?2, status = 'drawn' WHERE id = ?1 AND lottery_at IS NULL AND status IN ('open','closed') AND deadline_at <= ?2`)
+    db.prepare(`UPDATE activities SET lottery_at = ?2, status = 'drawn' WHERE id = ?1 AND lottery_at IS NULL AND status IN ('open','closed') AND (deadline_at <= ?2 OR status = 'closed')`)
       .bind(activityId, now),
     ...ranked.map((r, i) => db.prepare(
       `UPDATE registrations SET status = ?4, draw_rank = ?5 WHERE id = ?1 AND status = 'lottery_pool' AND ${guard}`
@@ -553,7 +554,8 @@ async function drawSurveyLottery(db, admin, activity, now, seedBytes) {
   if (activity.cancelled_at) throw new HttpError(409, '活動已取消，不能抽籤');
   if (activity.lottery_at) throw new HttpError(409, '此活動已經抽過籤，不可重複抽籤');
   if (!['open', 'closed'].includes(activity.status)) throw new HttpError(409, '活動狀態不允許抽籤');
-  if (now < activity.deadline_at) throw new HttpError(409, '報名尚未截止，不能抽籤');
+  // 報名截止時間已到，或管理員已提前「關閉報名」，即可抽籤（抽籤後狀態為已抽籤，不能再重新開放）
+  if (now < activity.deadline_at && activity.status !== 'closed') throw new HttpError(409, '報名尚未截止，不能抽籤（如要提前抽籤，請先在活動管理按「關閉報名」）');
 
   const { results: pool } = await db.prepare(
     `SELECT s.id, r.class_code, s.seat_no FROM registration_students s JOIN registrations r ON r.id = s.registration_id
@@ -565,7 +567,7 @@ async function drawSurveyLottery(db, admin, activity, now, seedBytes) {
   const seedHex = [...new Uint8Array(seedBytes)].map(b => b.toString(16).padStart(2, '0')).join('');
   const guard = `(SELECT lottery_at FROM activities WHERE id = ?2) = ?3`;
   const results = await db.batch([
-    db.prepare(`UPDATE activities SET lottery_at = ?2, status = 'drawn' WHERE id = ?1 AND lottery_at IS NULL AND status IN ('open','closed') AND deadline_at <= ?2 AND cancelled_at IS NULL`)
+    db.prepare(`UPDATE activities SET lottery_at = ?2, status = 'drawn' WHERE id = ?1 AND lottery_at IS NULL AND status IN ('open','closed') AND (deadline_at <= ?2 OR status = 'closed') AND cancelled_at IS NULL`)
       .bind(activity.id, now),
     db.prepare(
       `UPDATE registration_students SET draw_result = json_extract(j.value, '$.result'), draw_rank = json_extract(j.value, '$.rank')

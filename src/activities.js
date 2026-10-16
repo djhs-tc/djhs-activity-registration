@@ -239,9 +239,15 @@ export async function createActivity(db, admin, a) {
 
 // 抽籤前隨時可修改（含開放後）；抽籤後時間與名額已用於公布結果，不可再改。
 // 修改後依報名順序重新計算優先錄取（名額調整會影響哪些班級是 priority）。
-export async function updateActivity(db, admin, id, a) {
+// base：編輯畫面開啟時的活動內容。若期間已被他人（或其他分頁）修改，拒絕儲存，避免舊表單覆蓋新資料。
+// 直接呼叫時可省略（undefined）；API 一律傳入，缺少時視為過期表單。
+export async function updateActivity(db, admin, id, a, base) {
   const before = await getActivity(db, id);
   if (!before) throw new HttpError(404, '找不到此活動');
+  if (base !== undefined) {
+    const changed = !base || typeof base !== 'object' || Object.keys(pick(before)).some(k => String(before[k] ?? '') !== String(base[k] ?? ''));
+    if (changed) throw new HttpError(409, '此活動在您開啟編輯畫面後已被修改（可能是其他管理員或其他分頁）。請重新整理頁面後再編輯，以免覆蓋最新資料。');
+  }
   if (before.lottery_at || !EDITABLE.includes(before.status)) throw new HttpError(409, '已抽籤或已封存的活動不可修改');
   // 活動類型建立後不可變更（講座與意願調查的報名資料結構不同）
   if (a.kind !== before.kind) throw new HttpError(409, '活動類型建立後不可變更');

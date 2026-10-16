@@ -71,3 +71,4 @@ test('deadline reminder text depends on activity kind', () => {
   assert.match(scheduleEvents({ ...base, kind: 'survey' })[1].details, /收費/);
   assert.ok(toIcs({ ...base, kind: 'survey', organizer_email: '' }, 'h').includes('BEGIN:VEVENT'));
 });
+

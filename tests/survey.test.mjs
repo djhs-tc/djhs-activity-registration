@@ -155,8 +155,9 @@ test('admin marks paid; students CSV one row per student; cancelled class exclud
 test('activity kind cannot change after creation; survey max is editable', async () => {
   const { call } = setup();
   const id = await openSurvey(call);
-  assert.match((await call(`/api/admin/activities/${id}`, { method: 'PUT', body: { ...surveyBody(), kind: 'lecture', priority_quota: 15, lottery_quota: 3 }, as: ADMIN })).data.error, /類型/);
-  const ok = await call(`/api/admin/activities/${id}`, { method: 'PUT', body: surveyBody({ max_students_per_class: 40 }), as: ADMIN });
+  const current = async id => (await call('/api/admin/activities', { as: ADMIN })).data.activities.find(a => a.id === id);
+  assert.match((await call(`/api/admin/activities/${id}`, { method: 'PUT', body: { ...surveyBody(), kind: 'lecture', priority_quota: 15, lottery_quota: 3, base: await current(id) }, as: ADMIN })).data.error, /類型/);
+  const ok = await call(`/api/admin/activities/${id}`, { method: 'PUT', body: { ...surveyBody({ max_students_per_class: 40 }), base: await current(id) }, as: ADMIN });
   assert.equal(ok.status, 200);
   assert.equal(ok.data.activity.max_students_per_class, 40);
   assert.match((await call('/api/admin/activities', { body: surveyBody({ max_students_per_class: 0 }), as: ADMIN })).data.error, /人數上限/);

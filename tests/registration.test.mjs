@@ -42,6 +42,7 @@ function activityBody(over = {}) {
     priority_quota: 15, lottery_quota: 3, organizer_name: '教學組長', organizer_email: 'tjjh111@tjjh.tc.edu.tw', ...over
   };
 }
+const current = async (call, id) => (await call('/api/admin/activities', { as: ADMIN })).data.activities.find(a => a.id === id);
 const reg = (activity_id, class_code, over = {}) => ({ activity_id, class_code, teacher_name: '王老師', accompany: 'yes', notes: '', ...over });
 const teacher = i => `t${i}@st.tc.edu.tw`;
 
@@ -93,9 +94,9 @@ test('draft activity is hidden and not open for registration; editable after ope
   assert.equal(created.data.activity.opens_at.endsWith('Z'), true);
   assert.deepEqual((await call('/api/activities')).data.activities, []);
   assert.equal((await call('/api/registrations', { method: 'POST', body: reg(id, '701'), as: teacher(1) })).status, 404);
-  assert.equal((await call(`/api/admin/activities/${id}`, { method: 'PUT', body: activityBody({ title: '改名' }), as: ADMIN })).data.activity.title, '改名');
+  assert.equal((await call(`/api/admin/activities/${id}`, { method: 'PUT', body: { ...activityBody({ title: '改名' }), base: await current(call, id) }, as: ADMIN })).data.activity.title, '改名');
   await call(`/api/admin/activities/${id}/status`, { method: 'POST', body: { status: 'open' }, as: ADMIN });
-  const edited = await call(`/api/admin/activities/${id}`, { method: 'PUT', body: activityBody({ venue: '大禮堂' }), as: ADMIN });
+  const edited = await call(`/api/admin/activities/${id}`, { method: 'PUT', body: { ...activityBody({ venue: '大禮堂' }), base: await current(call, id) }, as: ADMIN });
   assert.equal(edited.status, 200);
   assert.equal(edited.data.activity.venue, '大禮堂');
   assert.equal(edited.data.activity.status, 'open');
@@ -306,4 +307,24 @@ test('after the lottery, activity cannot be edited and cancel does not reshuffle
   const after = status();
   delete before['701'];
   assert.deepEqual(after, before);
+});
+
+test('stale edit form cannot overwrite newer changes (two tabs / two admins)', async () => {
+  const { call } = setup();
+  const id = await openActivity(call);
+  const formA = await current(call, id);   // 分頁 A 開啟編輯
+  const formB = await current(call, id);   // 分頁 B 開啟編輯
+  const later = tp(60 * 24), dl = tp(60 * 48);
+  const a = await call(`/api/admin/activities/${id}`, { method: 'PUT', body: { ...activityBody({ opens_date: later.date, opens_time: later.time, deadline_date: dl.date, deadline_time: dl.time }), base: formA }, as: ADMIN });
+  assert.equal(a.status, 200);
+  const b = await call(`/api/admin/activities/${id}`, { method: 'PUT', body: { ...activityBody({ description: '只改說明', deadline_date: dl.date, deadline_time: dl.time }), base: formB }, as: ADMIN });
+  assert.equal(b.status, 409);
+  assert.match(b.data.error, /重新整理/);
+  assert.equal((await current(call, id)).opens_at, taipeiToUtcIso(later.date, later.time), 'newer opens_at kept');
+  // 缺少 base（舊版頁面）也拒絕
+  assert.equal((await call(`/api/admin/activities/${id}`, { method: 'PUT', body: activityBody(), as: ADMIN })).status, 409);
+  // 重新整理後以最新內容為基準即可儲存
+  const c = await call(`/api/admin/activities/${id}`, { method: 'PUT', body: { ...activityBody({ opens_date: later.date, opens_time: later.time, deadline_date: dl.date, deadline_time: dl.time, description: '只改說明' }), base: await current(call, id) }, as: ADMIN });
+  assert.equal(c.status, 200);
+  assert.equal(c.data.activity.description, '只改說明');
 });

@@ -191,8 +191,9 @@ async function adminCreateActivity({ request, env }) {
 
 async function adminUpdateActivity({ request, env, params }) {
   const admin = await requireAdmin(request, env);
-  const a = validateActivity(await readJson(request));
-  return json({ activity: await updateActivity(requireDb(env), admin, params[0], a) });
+  const body = await readJson(request);
+  const a = validateActivity(body);
+  return json({ activity: await updateActivity(requireDb(env), admin, params[0], a, body.base ?? null) });
 }
 
 async function adminSetStatus({ request, env, params }) {

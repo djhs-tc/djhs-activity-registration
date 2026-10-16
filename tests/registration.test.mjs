@@ -39,7 +39,7 @@ function activityBody(over = {}) {
     title: '自律學習力', speaker: '陳怡嘉老師', venue: '鎮瀾文化大樓', audience: '七、八、九年級', description: '',
     starts_date: s.date, starts_time: s.time, ends_date: e.date, ends_time: e.time,
     opens_date: o.date, opens_time: o.time, deadline_date: d.date, deadline_time: d.time,
-    priority_quota: 15, lottery_quota: 3, ...over
+    priority_quota: 15, lottery_quota: 3, organizer_name: '教學組長', organizer_email: 'tjjh111@tjjh.tc.edu.tw', ...over
   };
 }
 const reg = (activity_id, class_code, over = {}) => ({ activity_id, class_code, teacher_name: '王老師', accompany: 'yes', notes: '', ...over });
@@ -266,7 +266,7 @@ const admin = { email: ADMIN };
 const editBody = over => ({ title: 't', speaker: '', venue: '', audience: '', description: '',
   starts_date: '2026-11-12', starts_time: '14:00', ends_date: '2026-11-12', ends_time: '16:00',
   opens_date: '2026-10-16', opens_time: '08:00', deadline_date: '2026-11-06', deadline_time: '12:00',
-  priority_quota: 2, lottery_quota: 1, ...over });
+  priority_quota: 2, lottery_quota: 1, organizer_name: '教學組長', organizer_email: 'tjjh111@tjjh.tc.edu.tw', ...over });
 
 
 test('cancel → earliest pool entry promoted; cancelled class may re-register at the end', async () => {

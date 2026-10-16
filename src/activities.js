@@ -1,6 +1,6 @@
 import { HttpError, taipeiToUtcIso, nowIso } from './http.js';
 
-const ACTIVITY_COLUMNS = 'id, title, speaker, venue, audience, description, starts_at, ends_at, opens_at, deadline_at, priority_quota, lottery_quota, status, lottery_at, kind, max_students_per_class';
+const ACTIVITY_COLUMNS = 'id, title, speaker, venue, audience, description, starts_at, ends_at, opens_at, deadline_at, priority_quota, lottery_quota, status, lottery_at, kind, max_students_per_class, organizer_name';
 const ACTIVE = "status != 'cancelled'";
 // 班級代碼：年級 7–9 + 班號 01–30，例如 701、815。
 export const CLASS_CODE = /^[789](0[1-9]|[12]\d|30)$/;
@@ -206,26 +206,32 @@ export function validateActivity(body) {
     starts_at: time('starts'), ends_at: time('ends'), opens_at: time('opens'), deadline_at: time('deadline'),
     // 意願調查沒有名額與抽籤
     priority_quota: survey ? 0 : quota('priority_quota'), lottery_quota: survey ? 0 : quota('lottery_quota'),
-    kind, max_students_per_class: maxStudents
+    kind, max_students_per_class: maxStudents,
+    organizer_name: text('organizer_name', 30, true), organizer_email: organizerEmail(body.organizer_email)
   };
   if (a.ends_at <= a.starts_at) throw new HttpError(400, '活動結束時間必須晚於開始時間');
   if (a.deadline_at <= a.opens_at) throw new HttpError(400, '報名截止時間必須晚於開放報名時間');
   if (a.deadline_at > a.starts_at) throw new HttpError(400, '報名截止時間不可晚於活動開始時間');
   return a;
 }
+function organizerEmail(v) {
+  const email = String(v || '').trim().toLowerCase();
+  if (!/^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$/.test(email) || email.length > 100) throw new HttpError(400, '請填寫正確的承辦人信箱');
+  return email;
+}
 const LABELS = {
   title: '活動名稱', speaker: '講師', venue: '地點', audience: '參加對象', description: '活動說明',
   starts: '活動開始', ends: '活動結束', opens: '開放報名', deadline: '報名截止',
-  priority_quota: '優先錄取名額', lottery_quota: '抽籤名額'
+  priority_quota: '優先錄取名額', lottery_quota: '抽籤名額', organizer_name: '承辦人姓名'
 };
 
 export async function createActivity(db, admin, a) {
   const id = crypto.randomUUID();
   await db.batch([
     db.prepare(
-      `INSERT INTO activities (id, title, speaker, venue, audience, description, starts_at, ends_at, opens_at, deadline_at, priority_quota, lottery_quota, status, created_by, kind, max_students_per_class)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'draft', ?13, ?14, ?15)`
-    ).bind(id, a.title, a.speaker, a.venue, a.audience, a.description, a.starts_at, a.ends_at, a.opens_at, a.deadline_at, a.priority_quota, a.lottery_quota, admin.email, a.kind, a.max_students_per_class),
+      `INSERT INTO activities (id, title, speaker, venue, audience, description, starts_at, ends_at, opens_at, deadline_at, priority_quota, lottery_quota, status, created_by, kind, max_students_per_class, organizer_name, organizer_email)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'draft', ?13, ?14, ?15, ?16, ?17)`
+    ).bind(id, a.title, a.speaker, a.venue, a.audience, a.description, a.starts_at, a.ends_at, a.opens_at, a.deadline_at, a.priority_quota, a.lottery_quota, admin.email, a.kind, a.max_students_per_class, a.organizer_name, a.organizer_email),
     audit(db, admin.email, 'activity_create', id, a)
   ]);
   return getActivity(db, id);
@@ -241,9 +247,9 @@ export async function updateActivity(db, admin, id, a) {
   if (a.kind !== before.kind) throw new HttpError(409, '活動類型建立後不可變更');
   const [res] = await db.batch([
     db.prepare(
-      `UPDATE activities SET title=?2, speaker=?3, venue=?4, audience=?5, description=?6, starts_at=?7, ends_at=?8, opens_at=?9, deadline_at=?10, priority_quota=?11, lottery_quota=?12, max_students_per_class=?13
+      `UPDATE activities SET title=?2, speaker=?3, venue=?4, audience=?5, description=?6, starts_at=?7, ends_at=?8, opens_at=?9, deadline_at=?10, priority_quota=?11, lottery_quota=?12, max_students_per_class=?13, organizer_name=?14, organizer_email=?15
        WHERE id = ?1 AND status IN ('draft','open','closed') AND lottery_at IS NULL`
-    ).bind(id, a.title, a.speaker, a.venue, a.audience, a.description, a.starts_at, a.ends_at, a.opens_at, a.deadline_at, a.priority_quota, a.lottery_quota, a.max_students_per_class),
+    ).bind(id, a.title, a.speaker, a.venue, a.audience, a.description, a.starts_at, a.ends_at, a.opens_at, a.deadline_at, a.priority_quota, a.lottery_quota, a.max_students_per_class, a.organizer_name, a.organizer_email),
     db.prepare(
       `INSERT INTO audit_logs (actor_email, action, activity_id, details_json) SELECT ?1, 'activity_update', ?2, ?3 WHERE changes() = 1`
     ).bind(admin.email, id, JSON.stringify({ before: pick(before), after: a })),
@@ -253,7 +259,7 @@ export async function updateActivity(db, admin, id, a) {
   return getActivity(db, id);
 }
 const EDITABLE = ['draft', 'open', 'closed'];
-const pick = r => Object.fromEntries(['title', 'speaker', 'venue', 'audience', 'description', 'starts_at', 'ends_at', 'opens_at', 'deadline_at', 'priority_quota', 'lottery_quota', 'kind', 'max_students_per_class'].map(k => [k, r[k]]));
+const pick = r => Object.fromEntries(['title', 'speaker', 'venue', 'audience', 'description', 'starts_at', 'ends_at', 'opens_at', 'deadline_at', 'priority_quota', 'lottery_quota', 'kind', 'max_students_per_class', 'organizer_name', 'organizer_email'].map(k => [k, r[k]]));
 
 // 抽籤前的單一規則：有效報名（priority + lottery_pool）依送出時間排序，前 N 班為 priority，其餘為 lottery_pool。
 // 回傳兩個敘述，放進同一個 batch（交易）：先記錄將變動的班級，再更新狀態。
@@ -295,12 +301,12 @@ export async function setActivityStatus(db, admin, id, next) {
 }
 
 export function getActivity(db, id) {
-  return db.prepare(`SELECT ${ACTIVITY_COLUMNS}, created_by, created_at FROM activities WHERE id = ?1`).bind(id).first();
+  return db.prepare(`SELECT ${ACTIVITY_COLUMNS}, organizer_email, created_by, created_at FROM activities WHERE id = ?1`).bind(id).first();
 }
 
 export async function listAdminActivities(db) {
   const { results } = await db.prepare(
-    `SELECT ${ACTIVITY_COLUMNS}, created_by, created_at,
+    `SELECT ${ACTIVITY_COLUMNS}, organizer_email, created_by, created_at,
        (SELECT COUNT(*) FROM registrations r WHERE r.activity_id = a.id AND r.status = 'priority') AS priority_count,
        (SELECT COUNT(*) FROM registrations r WHERE r.activity_id = a.id AND r.status = 'lottery_pool') AS pool_count,
        (SELECT COUNT(*) FROM registrations r WHERE r.activity_id = a.id AND r.status = 'selected') AS selected_count,
@@ -422,4 +428,49 @@ export function toStudentsCsv(rows) {
     }
   }
   return csvDoc(head, lines);
+}
+
+// ---------- 行事曆（.ics） ----------
+// 三個事件：開放報名、報名截止、活動本身；各內建前 1 天與前 1 小時提醒。承辦人列為與會者。
+export function scheduleEvents(a) {
+  const survey = a.kind === 'survey';
+  const after = survey ? '截止後請至管理後台「報名名單」統計人數、確認名單並辦理收費。' : '截止後請至管理後台「抽籤作業」執行抽籤，並通知錄取班級。';
+  const min = 60e3;
+  const plus = (iso, m) => new Date(Date.parse(iso) + m * min).toISOString();
+  return [
+    { key: 'open', title: `【開放報名】${a.title}`, start: a.opens_at, end: plus(a.opens_at, 30), details: '活動今日開放報名，請確認報名頁面運作正常並通知導師。' },
+    { key: 'deadline', title: `【報名截止】${a.title}`, start: a.deadline_at, end: plus(a.deadline_at, 30), details: after },
+    { key: 'event', title: a.title, start: a.starts_at, end: a.ends_at, details: [a.speaker && `講師：${a.speaker}`, a.audience && `對象：${a.audience}`].filter(Boolean).join('\n') }
+  ];
+}
+
+export function toIcs(a, host, now = nowIso()) {
+  const stamp = iso => iso.replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+  const esc = s => String(s ?? '').replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\r?\n/g, '\\n');
+  // RFC 5545：每行最多 75 個位元組，續行以空白開頭
+  const fold = line => {
+    const bytes = new TextEncoder().encode(line);
+    if (bytes.length <= 75) return line;
+    const out = [];
+    let cur = '';
+    for (const ch of line) {
+      if (new TextEncoder().encode(cur + ch).length > (out.length ? 74 : 75)) { out.push(cur); cur = ''; }
+      cur += ch;
+    }
+    out.push(cur);
+    return out.join('\r\n ');
+  };
+  const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//DJHS//Activity Registration//ZH-TW', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH', `X-WR-CALNAME:${esc(a.title)}`];
+  for (const e of scheduleEvents(a)) {
+    lines.push('BEGIN:VEVENT', `UID:${a.id}-${e.key}@${host}`, `DTSTAMP:${stamp(now)}`, `DTSTART:${stamp(e.start)}`, `DTEND:${stamp(e.end)}`,
+      `SUMMARY:${esc(e.title)}`, `DESCRIPTION:${esc(e.details + (e.details ? '\n' : '') + `https://${host}/`)}`);
+    if (a.venue && e.key === 'event') lines.push(`LOCATION:${esc(a.venue)}`);
+    if (a.organizer_email) lines.push(`ATTENDEE;CN=${esc(a.organizer_name || a.organizer_email)};ROLE=REQ-PARTICIPANT:mailto:${a.organizer_email}`);
+    for (const [trigger, label] of [['-P1D', '明天'], ['-PT1H', '1 小時後']]) {
+      lines.push('BEGIN:VALARM', 'ACTION:DISPLAY', `TRIGGER:${trigger}`, `DESCRIPTION:${esc(label + '：' + e.title)}`, 'END:VALARM');
+    }
+    lines.push('END:VEVENT');
+  }
+  lines.push('END:VCALENDAR');
+  return lines.map(fold).join('\r\n') + '\r\n';
 }

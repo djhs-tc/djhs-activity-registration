@@ -7,7 +7,7 @@ import { HttpError, json, readJson, nowIso } from './http.js';
 import {
   listPublicActivities, validateRegistration, register, listMyRegistrations,
   validateActivity, createActivity, updateActivity, setActivityStatus, getActivity, listAdminActivities,
-  listRegistrations, cancelRegistration, drawLottery, toCsv, toStudentsCsv,
+  listRegistrations, cancelRegistration, drawLottery, toCsv, toStudentsCsv, toIcs,
   withdrawStudent, restoreStudent, setStudentPaid
 } from './activities.js';
 
@@ -59,6 +59,7 @@ const ROUTES = [
   ['GET', new RegExp(`^/api/admin/activities/${ID}/registrations\\.csv$`), adminRegistrationsCsv],
   ['POST', new RegExp(`^/api/admin/activities/${ID}/registrations/${ID}/cancel$`), adminCancelRegistration],
   ['POST', new RegExp(`^/api/admin/activities/${ID}/draw$`), adminDraw],
+  ['GET', new RegExp(`^/api/admin/activities/${ID}/calendar\\.ics$`), adminCalendar],
   ['POST', new RegExp(`^/api/admin/registrations/${ID}/students/${SID}/restore$`), adminStudentRestore],
   ['POST', new RegExp(`^/api/admin/registrations/${ID}/students/${SID}/paid$`), adminStudentPaid],
   ['GET', /^\/api\/admin\/allowed-emails$/, adminListAllowed],
@@ -241,6 +242,19 @@ async function adminDraw({ request, env, params }) {
   const admin = await requireAdmin(request, env);
   await readJson(request);
   return json({ result: await drawLottery(requireDb(env), admin, params[0]) });
+}
+
+async function adminCalendar({ request, env, params }) {
+  await requireAdmin(request, env);
+  const activity = await getActivity(requireDb(env), params[0]);
+  if (!activity) throw new HttpError(404, '找不到此活動');
+  return new Response(toIcs(activity, new URL(request.url).host), {
+    headers: {
+      'content-type': 'text/calendar; charset=utf-8',
+      'content-disposition': `attachment; filename="activity.ics"; filename*=UTF-8''${encodeURIComponent(activity.title + '-行事曆.ics')}`,
+      'cache-control': 'no-store'
+    }
+  });
 }
 
 async function adminStudentRestore({ request, env, params }) {

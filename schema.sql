@@ -19,7 +19,10 @@ CREATE TABLE IF NOT EXISTS activities (
  lottery_at TEXT,
  -- lecture：講座（優先名額＋抽籤）；survey：營隊意願調查（無名額，收學生名單）
  kind TEXT NOT NULL DEFAULT 'lecture' CHECK(kind IN ('lecture','survey')),
- max_students_per_class INTEGER
+ max_students_per_class INTEGER,
+ -- 承辦人（姓名公開顯示；信箱僅管理員可見，作為行事曆邀請／通知對象）
+ organizer_name TEXT NOT NULL DEFAULT '',
+ organizer_email TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS registrations (
  id TEXT PRIMARY KEY,

@@ -29,7 +29,7 @@ function surveyBody(over = {}) {
   const s = tp(60 * 24 * 30), e = tp(60 * 24 * 32), o = tp(-60), d = tp(60 * 24);
   return { kind: 'survey', title: '暑期營隊', speaker: '', venue: '', audience: '七年級', description: '',
     starts_date: s.date, starts_time: s.time, ends_date: e.date, ends_time: e.time, opens_date: o.date, opens_time: o.time,
-    deadline_date: d.date, deadline_time: d.time, max_students_per_class: 5, ...over };
+    deadline_date: d.date, deadline_time: d.time, max_students_per_class: 5, organizer_name: '教學組長', organizer_email: 'tjjh111@tjjh.tc.edu.tw', ...over };
 }
 const T1 = 't1@st.tc.edu.tw', T2 = 't2@st.tc.edu.tw';
 const roster = [{ seat_no: 1, name: '王小明', gender: '男' }, { seat_no: 2, name: '李小華', gender: '女' }, { seat_no: 5, name: '陳大同', gender: 'M' }];
@@ -75,7 +75,7 @@ test('survey: register with roster, gender counts, no lottery, public shows tota
 test('lecture activities reject a student roster', async () => {
   const { call } = setup();
   const s = tp(60 * 24 * 7), e = tp(60 * 24 * 7 + 120), o = tp(-60), d = tp(60);
-  const c = await call('/api/admin/activities', { body: { title: '講座', starts_date: s.date, starts_time: s.time, ends_date: e.date, ends_time: e.time, opens_date: o.date, opens_time: o.time, deadline_date: d.date, deadline_time: d.time, priority_quota: 15, lottery_quota: 3 }, as: ADMIN });
+  const c = await call('/api/admin/activities', { body: { title: '講座', starts_date: s.date, starts_time: s.time, ends_date: e.date, ends_time: e.time, opens_date: o.date, opens_time: o.time, deadline_date: d.date, deadline_time: d.time, priority_quota: 15, lottery_quota: 3, organizer_name: '教學組長', organizer_email: 'tjjh111@tjjh.tc.edu.tw',  }, as: ADMIN });
   assert.equal(c.data.activity.kind, 'lecture');
   await call(`/api/admin/activities/${c.data.activity.id}/status`, { body: { status: 'open' }, as: ADMIN });
   assert.match((await call('/api/registrations', { body: reg(c.data.activity.id, '701'), as: T1 })).data.error, /不需填寫學生名單/);

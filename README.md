@@ -48,6 +48,7 @@ GitHub main 推送 ──► Cloudflare Workers Builds（deploy command: npx wra
 | GET | `/api/admin/activities/:id/registrations` | 管理員 | 報名名單與抽籤紀錄 |
 | GET | `/api/admin/activities/:id/registrations.csv` | 管理員 | CSV 匯出（Excel 可直接開啟，已防公式注入） |
 | POST | `/api/admin/activities/:id/registrations/:rid/cancel` | 管理員 | 取消某班報名 `{reason}` |
+| GET | `/api/admin/activities/:id/calendar.ics` | 管理員 | 行事曆檔：開放報名、報名截止、活動當天三個事件，內建前 1 天／前 1 小時提醒，承辦人列為與會者 |
 | POST | `/api/admin/activities/:id/draw` | 管理員 | 執行抽籤（截止後、僅一次；意願調查不適用） |
 | POST | `/api/registrations/:rid/students/:sid/withdraw` | 導師（自己的報名、截止前）／管理員 | 意願調查：標記學生不參加 |
 | POST | `/api/admin/registrations/:rid/students/:sid/restore` | 管理員 | 恢復學生為參加 |
@@ -69,6 +70,12 @@ GitHub main 推送 ──► Cloudflare Workers Builds（deploy command: npx wra
   - 每次狀態異動都寫入 `priority_recompute` 稽核紀錄（班級、原狀態、新狀態）。
   - 抽籤後取消不會重新計算，名額異動由管理員人工處理。
 - 稽核紀錄 `audit_logs`：`login`、`activity_create`、`activity_update`（含修改前後）、`activity_status`、`register`、`registration_cancel`、`priority_recompute`、`lottery_draw`、`student_withdraw`、`student_restore`、`student_paid`、`student_unpaid`、`allowlist_add`、`allowlist_remove`。
+
+### 承辦人與行事曆提醒
+- 每個活動必填**承辦人姓名與信箱**。姓名顯示在公開活動頁；信箱只有管理員可見（公開 API 不回傳）。
+- 管理後台「活動管理」每個活動有「加入 Google 日曆」按鈕（開放報名／報名截止／活動當天），已預先把承辦人加為邀請對象；在 Google 日曆儲存並傳送邀請後，承辦人即收到通知並由日曆提醒。也可下載 `.ics`（內建前 1 天與前 1 小時提醒）。
+- 截止事件的說明依活動類型提示下一步（講座：執行抽籤；意願調查：統計人數與收費）。修改活動時間後需重新加入行事曆。
+- 目前系統本身不寄信：Cloudflare 寄信需要自有網域（現用 `workers.dev`）。日後若購買網域，可改為定時自動寄送附報名人數的 Email 給承辦人。
 
 ### 營隊意願調查（`kind = survey`）
 - 建立活動時選擇類型，**建立後不可變更**。沒有名額與抽籤，班級報名狀態為「已登記」；每班人數上限由管理員設定（1–60，抽籤前可修改）。
@@ -125,7 +132,7 @@ npx wrangler dev --local
 
 ## 上線前測試清單
 
-- [x] `npm test` 全部通過（49 項，含營隊意願調查、帳號名單）
+- [x] `npm test` 全部通過（53 項，含營隊意願調查、帳號名單、行事曆）
 - [x] 本機 `wrangler dev` 端到端：草稿不可報名、優先名額、重複報名、取消、截止前不可抽籤、截止後不可報名、同時抽籤僅一次成功、稽核紀錄筆數正確
 - [x] `@st.tc.edu.tw`、`@tjjh.tc.edu.tw` 帳號可登入；個人 Gmail 被拒絕；`audit_logs` 有 login 紀錄
 - [ ] `scripts/verify-live.sh` 全部 PASS（每次部署後）

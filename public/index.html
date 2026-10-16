@@ -94,7 +94,7 @@ catch(e){if(seq===dashSeq)el.innerHTML=dashShell('活動快訊','<p class="err">
 function anonDash(){const open=openNow().slice(0,3);let body;
 if(open.length)body='<ul class="dash-list">'+open.map(a=>dashItem("openActivity('"+a.id+"')",a.title,actMeta(a),dashTag(a))).join('')+'</ul>';
 else{const up=openingSoon().slice(0,2);body='<p class="muted">目前沒有開放報名的活動，歡迎稍後再來查看。</p>'+(up.length?'<h3 class="dash-sub">即將開放報名</h3><ul class="dash-list">'+up.map(a=>dashItem("openActivity('"+a.id+"')",a.title,['開放報名 '+fmt(a.opens_at),'活動 '+timeRange(a)],dashTag(a))).join('')+'</ul>':'');}
-return dashShell('活動快訊',body,dashLink('查看所有活動 →',"choose('events');scrollToContent()")+(authCfg.authEnabled?'<span class="muted">使用左側按鈕登入後即可報名</span>':''));}
+return dashShell('活動快訊',body,dashLink('查看所有活動 →',"choose('events');scrollToContent()")+(authCfg.authEnabled?'<span class="muted">以「使用 Google 登入」登入後即可報名</span>':''));}
 // 一般使用者：我的近期報名（最多 2 筆，狀態沿用系統名稱）＋尚未報名的開放活動（最多 2 筆）
 async function userDash(){const {registrations:rs}=await api('/api/my/registrations');myRegs=rs;
 const mine=rs.filter(r=>r.ends_at>serverNow).sort((x,y)=>x.starts_at.localeCompare(y.starts_at)||y.submitted_at.localeCompare(x.submitted_at)).slice(0,2);

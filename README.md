@@ -60,7 +60,6 @@ GitHub main 推送 ──► Cloudflare Workers Builds（deploy command: npx wra
 | GET | `/api/admin/class-teachers` | 管理員 | 班級導師名單 |
 | POST | `/api/admin/class-teachers/batch` | 管理員 | 批次設定 `{entries:[{class_code, teacher_name, teacher_email}]}`（整批檢查，同班改派） |
 | POST | `/api/admin/class-teachers/remove` | 管理員 | 移除 `{class_code}` |
-| GET | `/api/my/class-students` | 登入者 | 導師查看本班學生在各營隊的報名、錄取與繳費（依班級導師名單） |
 | GET / POST | `/api/admin/settings` | 管理員 | 讀取／設定登入政策 `{login_policy}`，值為 `school_only` 或 `any_google` |
 | GET / POST | `/api/admin/allowed-emails` | 管理員 | 帳號名單：列出／加入個人信箱 `{email, note}` |
 | POST | `/api/admin/allowed-emails/batch` | 管理員 | 批次加入 `{entries: [{email, note}]}`，最多 300 筆；任一筆有誤整批不加入，已存在者略過 |
@@ -106,7 +105,7 @@ GitHub main 推送 ──► Cloudflare Workers Builds（deploy command: npx wra
   - **超過名額改抽籤**（必須同時設定人數上限）：截止前不限人數收件；截止後管理員在「抽籤作業」以**學生為單位**抽出上限人數（HMAC-SHA256(種子, "student:" + 學生 id) 排序，種子與名單寫入稽核紀錄，可重算驗證，只能抽一次）。未超過上限時全部錄取。抽籤結果顯示在「我的報名」、管理後台與 CSV，應收金額只計錄取者。
 - 管理後台「報名名單」顯示各年級 × 男女人數統計與已繳費人數，CSV 一位學生一列，供收費對帳。
 - **退費**：已繳費、但之後不參加、未錄取、整班取消或活動取消的學生列在「退費」區（待退費），退款後勾「已退費」。「已收」＝已繳未退費者；CSV 繳費欄顯示 已繳／已繳（待退費）／已退費／未繳。稽核紀錄 `student_refunded`／`student_unrefunded`。
-- **班級導師名單**（管理後台「班級導師」，可從 Excel 貼上 班級、姓名、信箱）：只用於查看，不限制誰能報名。導師（以登入的 Google 帳號比對名單信箱）在「我的報名」上方看到「我班學生」（唯讀）。學生自填的班級座號未經驗證，填錯班會出現在別班導師的清單中。稽核紀錄 `class_teacher_set`／`class_teacher_remove`。
+- **班級導師名單**（管理後台「班級導師」，可從 Excel 貼上 班級、姓名、信箱）：目前**僅保存備用**，不限制報名，也不顯示給導師（「我班學生」查看功能因多數導師信箱不是 Google 帳號而暫停，見 git 歷史 6ef82d5）。稽核紀錄 `class_teacher_set`／`class_teacher_remove`。
 - 個資：學生名單只有送出的導師本人與管理員可見；公開 API 只回傳班數與男女總數。
 
 ### D1 資料表

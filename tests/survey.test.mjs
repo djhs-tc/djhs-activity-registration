@@ -440,7 +440,7 @@ test('refund: only paid students who withdrew / were not selected / cancelled; p
   assert.deepEqual(actions, ['student_refunded', 'student_refunded']);
 });
 
-test('class teachers: admin batch, registration not restricted, teacher sees own class students', async () => {
+test('class teachers: admin batch, kept for later, no registration restriction, class view disabled', async () => {
   const { call, DB } = setup();
   const T3 = 't3@st.tc.edu.tw';
   assert.equal((await call('/api/admin/class-teachers/batch', { body: { entries: [{ class_code: '701', teacher_name: '王', teacher_email: 'T1@st.tc.edu.tw' }] }, as: T1 })).status, 403);
@@ -452,21 +452,11 @@ test('class teachers: admin batch, registration not restricted, teacher sees own
   await call('/api/admin/class-teachers/batch', { body: { entries: [{ class_code: '702', teacher_name: '陳', teacher_email: T3 }] }, as: ADMIN });
   const list = (await call('/api/admin/class-teachers', { as: ADMIN })).data.teachers;
   assert.deepEqual(list.map(t => [t.class_code, t.teacher_email]), [['701', T1], ['702', T3]]);
-  // 導師填寫：只有該班導師能報名
+  // 名單不限制報名；「我班學生」查看功能暫停，API 不存在
   const id = await openSurvey(call, { min_participants: 0 });
-  // 名單不限制報名：非該班導師也能替該班報名
   assert.equal((await call('/api/registrations', { body: reg(id, '701'), as: T2 })).status, 201);
-  // 學生填寫（免登入）：不受限，且導師看得到本班學生
-  const sid = await openSurvey(call, { min_participants: 0, fill_mode: 'open', max_students_per_class: 30, title: '烘焙營' });
-  const pr = await call('/api/public/registrations', { body: pub(sid, { class_code: '702', seat_no: 9, name: '小明' }) });
-  assert.equal(pr.status, 201, JSON.stringify(pr.data));
-  const mine = (await call('/api/my/class-students', { as: T3 })).data;
-  assert.deepEqual(mine.classes, ['702']);
-  assert.deepEqual(mine.registrations.map(r => [r.title, r.class_code, r.students[0].name]), [['烘焙營', '702', '小明']]);
-  const none = (await call('/api/my/class-students', { as: T2 })).data;
-  assert.deepEqual([none.classes, none.registrations], [[], []]);
+  assert.equal((await call('/api/my/class-students', { as: T3 })).status, 404);
   await call('/api/admin/class-teachers/remove', { body: { class_code: '702' }, as: ADMIN });
-  assert.deepEqual((await call('/api/my/class-students', { as: T3 })).data.classes, []);
   const acts = DB.raw.prepare(`SELECT action FROM audit_logs WHERE action LIKE 'class_teacher%' ORDER BY id`).all().map(x => x.action);
   assert.deepEqual(acts, ['class_teacher_set', 'class_teacher_set', 'class_teacher_set', 'class_teacher_remove']);
 });

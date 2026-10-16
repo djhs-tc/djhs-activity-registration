@@ -157,23 +157,6 @@ export async function listMyRegistrations(db, email) {
   return attachStudents(results || [], students || []);
 }
 
-export async function listClassStudents(db, classes) {
-  if (!classes.length) return [];
-  const list = JSON.stringify(classes);
-  const { results } = await db.prepare(
-    `SELECT r.id, r.activity_id, r.class_code, r.status, r.submitter, r.submitted_at, r.teacher_name,
-            a.title, a.starts_at, a.deadline_at, a.fee, a.lottery_at, a.cancelled_at, a.fill_mode, a.overflow_mode, a.max_participants
-     FROM registrations r JOIN activities a ON a.id = r.activity_id
-     WHERE a.kind = 'survey' AND a.status != 'archived' AND r.status != 'cancelled' AND r.class_code IN (SELECT value FROM json_each(?1))
-     ORDER BY a.starts_at, r.class_code`
-  ).bind(list).all();
-  const { results: students } = await db.prepare(
-    `SELECT ${STUDENT_COLUMNS} FROM registration_students s JOIN registrations r ON r.id = s.registration_id JOIN activities a ON a.id = r.activity_id
-     WHERE a.kind = 'survey' AND a.status != 'archived' AND r.status != 'cancelled' AND r.class_code IN (SELECT value FROM json_each(?1)) ORDER BY s.seat_no`
-  ).bind(list).all();
-  return attachStudents(results || [], students || []);
-}
-
 function attachStudents(regs, students) {
   const by = new Map(regs.map(r => [r.id, Object.assign(r, { students: [] })]));
   for (const s of students) by.get(s.registration_id)?.students.push(s);

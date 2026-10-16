@@ -3,7 +3,7 @@ import { CLASS_CODE } from './activities.js';
 import { normalizeEmail } from './allowlist.js';
 
 // 班級導師名單：班級 → 導師姓名、信箱。只有管理員能維護，每次異動寫入稽核紀錄。
-// 用途：導師在「我的報名」查看本班學生的報名、錄取與繳費（不限制報名）。
+// 目前僅保存備用（「我班學生」查看功能暫停），不影響報名。
 const EMAIL = /^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$/;
 export const CLASS_BATCH_MAX = 120;
 
@@ -14,11 +14,6 @@ export async function listClassTeachers(db) {
 
 export async function classTeacher(db, classCode) {
   return db.prepare('SELECT teacher_name, teacher_email FROM class_teachers WHERE class_code = ?1').bind(classCode).first();
-}
-
-export async function myClasses(db, email) {
-  const { results } = await db.prepare('SELECT class_code FROM class_teachers WHERE teacher_email = ?1 ORDER BY class_code').bind(normalizeEmail(email)).all();
-  return (results || []).map(r => r.class_code);
 }
 
 // 批次設定：整批檢查，任何一筆有誤就整批不寫入；同班級已有資料時更新為新導師。

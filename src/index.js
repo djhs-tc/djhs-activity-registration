@@ -4,13 +4,13 @@ import {
 } from './auth.js';
 import { getLoginPolicy, setLoginPolicy, getSettings } from './settings.js';
 import { isAllowedEmail, listAllowedEmails, addAllowedEmail, addAllowedEmailsBatch, removeAllowedEmail } from './allowlist.js';
-import { listClassTeachers, setClassTeachersBatch, removeClassTeacher, myClasses } from './classteachers.js';
+import { listClassTeachers, setClassTeachersBatch, removeClassTeacher } from './classteachers.js';
 import { HttpError, json, readJson, nowIso } from './http.js';
 import {
   listPublicActivities, validateRegistration, register, listMyRegistrations,
   validateActivity, createActivity, updateActivity, setActivityStatus, getActivity, listAdminActivities,
   listRegistrations, cancelRegistration, drawLottery, toCsv, toStudentsCsv, toIcs, cancelActivity, deleteActivity, backfillNext,
-  withdrawStudent, restoreStudent, setStudentPaid, setStudentRefunded, listClassStudents, selfCancelRegistration, openRegister, openCancel
+  withdrawStudent, restoreStudent, setStudentPaid, setStudentRefunded, selfCancelRegistration, openRegister, openCancel
 } from './activities.js';
 
 export default {
@@ -77,7 +77,6 @@ const ROUTES = [
   ['GET', /^\/api\/admin\/class-teachers$/, adminListClassTeachers],
   ['POST', /^\/api\/admin\/class-teachers\/batch$/, adminBatchClassTeachers],
   ['POST', /^\/api\/admin\/class-teachers\/remove$/, adminRemoveClassTeacher],
-  ['GET', /^\/api\/my\/class-students$/, myClassStudents],
   ['GET', /^\/api\/admin\/allowed-emails$/, adminListAllowed],
   ['POST', /^\/api\/admin\/allowed-emails$/, adminAddAllowed],
   ['POST', /^\/api\/admin\/allowed-emails\/batch$/, adminBatchAllowed],
@@ -353,14 +352,6 @@ async function adminRemoveClassTeacher({ request, env }) {
   const { class_code } = await readJson(request);
   await removeClassTeacher(requireDb(env), admin, class_code);
   return json({ ok: true });
-}
-
-// 導師查看本班學生（依班級導師名單）
-async function myClassStudents({ request, env }) {
-  const user = await requireUser(request, env);
-  const db = requireDb(env);
-  const classes = await myClasses(db, user.email);
-  return json({ classes, registrations: await listClassStudents(db, classes) });
 }
 
 async function adminGetSettings({ request, env }) {

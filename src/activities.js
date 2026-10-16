@@ -61,6 +61,9 @@ export function validateStudents(list) {
 // 意願調查（survey）沒有名額：狀態一律為 pending（畫面顯示「已登記」），學生名單在同一交易寫入。
 // 學生填寫（fill_mode = student）：一人一筆；同帳號、同班同座號不可重複；每班人數上限以該班已報名學生數計算。
 // 這些檢查都放在同一個 INSERT…SELECT 的條件中，與名額檢查一樣不會因同時送出而失效。
+// 座號是否已被占用：未取消的報名中只要有此座號（含已標記不參加者），就不能再由其他人報名同一座號
+const SEAT_TAKEN = alias => `(SELECT COUNT(*) FROM registration_students s5 JOIN registrations r5 ON r5.id = s5.registration_id
+  WHERE r5.activity_id = ${alias}.id AND r5.class_code = ?2 AND r5.status != 'cancelled' AND s5.seat_no = ?11)`;
 const CLASS_STUDENTS = (alias, extra = '') => `(SELECT COUNT(*) FROM registration_students s3 JOIN registrations r4 ON r4.id = s3.registration_id
   WHERE r4.activity_id = ${alias}.id AND r4.class_code = ?2 AND r4.status != 'cancelled' AND s3.status = 'active'${extra})`;
 
@@ -100,7 +103,7 @@ export async function register(db, user, input, now = nowIso(), opts = {}) {
            AND (?10 = 'teacher' OR (
              a.fill_mode = 'student'
              AND NOT EXISTS (SELECT 1 FROM registrations r2 WHERE r2.activity_id = a.id AND r2.teacher_email = ?4 AND r2.status != 'cancelled' AND r2.submitter = 'student')
-             AND ${CLASS_STUDENTS('a', ' AND s3.seat_no = ?11')} = 0
+             AND ${SEAT_TAKEN('a')} = 0
              AND (a.max_students_per_class IS NULL OR ${CLASS_STUDENTS('a')} < a.max_students_per_class)))`
       ).bind(id, input.classCode, input.teacherName, user.email, input.accompany, input.notes, now, input.activityId, input.students.length, submitter, seat, verified, opts.cancelHash || null),
       db.prepare(
@@ -126,8 +129,8 @@ export async function register(db, user, input, now = nowIso(), opts = {}) {
       const mine = await db.prepare(`SELECT class_code FROM registrations WHERE activity_id = ?1 AND teacher_email = ?2 AND status != 'cancelled' AND submitter = 'student'`).bind(input.activityId, user.email).first();
       if (mine) throw new HttpError(409, verified ? `您已經報名過此營隊（${mine.class_code} 班）。如需更改，請先到「我的報名」取消後再重新報名。` : `這個 Email 已經報名過此營隊（${mine.class_code} 班）。如需更改，請先取消後再重新報名。`);
       const { taken, inClass } = await db.prepare(
-        `SELECT ${CLASS_STUDENTS('a', ' AND s3.seat_no = ?3')} AS taken, ${CLASS_STUDENTS('a')} AS inClass FROM activities a WHERE a.id = ?1`
-      ).bind(input.activityId, input.classCode, seat).first();
+        `SELECT ${SEAT_TAKEN('a')} AS taken, ${CLASS_STUDENTS('a')} AS inClass FROM activities a WHERE a.id = ?1`
+      ).bind(input.activityId, input.classCode, ...Array(8).fill(null), seat).first();
       if (taken) throw new HttpError(409, `${input.classCode} 班 ${seat} 號已經有人報名。如果不是您本人，請洽導師或承辦人。`);
       if (activity.max_students_per_class && inClass >= activity.max_students_per_class) throw new HttpError(409, `${input.classCode} 班報名人數已達上限 ${activity.max_students_per_class} 人`);
     }
@@ -233,7 +236,7 @@ export async function openLookup(db, body) {
   const masked = name.length <= 1 ? name.join('') : name.length === 2 ? name[0] + '○' : name[0] + '○'.repeat(name.length - 2) + name[name.length - 1];
   return {
     result, name: masked, submitted_at: row.submitted_at, cancel_reason: row.cancelled_at ? row.cancel_reason : '',
-    fee: Number(row.fee) || 0, paid: Boolean(row.paid), refunded: Boolean(row.refunded), draw_at: result === 'waiting_draw' ? row.draw_at : null
+    fee: Number(row.fee) || 0, paid: Boolean(row.paid && !row.refunded), refunded: Boolean(row.refunded), draw_at: result === 'waiting_draw' ? row.draw_at : null
   };
 }
 
@@ -268,20 +271,28 @@ export async function withdrawStudent(db, actor, registrationId, studentId, now 
   if (!res.meta.changes) throw new HttpError(409, '無法變更：學生已標記不參加、報名已截止，或沒有權限');
 }
 
+// 恢復參加用：此報名所屬活動（以 ?1 = registration_id 查詢）與該活動目前參加中的學生數
+const ACT = col => `(SELECT a.${col} FROM registrations r JOIN activities a ON a.id = r.activity_id WHERE r.id = ?1)`;
+const ACTIVE_IN = extra => `(SELECT COUNT(*) FROM registration_students s2 JOIN registrations r2 ON r2.id = s2.registration_id
+  WHERE r2.activity_id = (SELECT activity_id FROM registrations WHERE id = ?1) AND r2.status != 'cancelled' AND s2.status = 'active' ${extra})`;
 export async function restoreStudent(db, admin, registrationId, studentId) {
   const [res] = await db.batch([
     db.prepare(
-      `UPDATE registration_students SET status = 'active', withdrawn_at = NULL, withdrawn_by = NULL
+      `UPDATE registration_students SET status = 'active', withdrawn_at = NULL, withdrawn_by = NULL,
+         -- 抽籤前就標記不參加、抽籤後才恢復者：沒有參加抽籤，排到候補名單最後
+         draw_result = CASE WHEN draw_result IS NULL AND ${ACT('lottery_at')} IS NOT NULL THEN 'not_selected' ELSE draw_result END,
+         draw_rank = CASE WHEN draw_result IS NULL AND ${ACT('lottery_at')} IS NOT NULL
+           THEN (SELECT COALESCE(MAX(s4.draw_rank), 0) + 1 FROM registration_students s4 JOIN registrations r4 ON r4.id = s4.registration_id WHERE r4.activity_id = ${ACT('id')})
+           ELSE draw_rank END
        WHERE id = ?2 AND registration_id = ?1 AND status = 'withdrawn'
          -- 抽籤錄取後退出、名額已由他人遞補者，恢復會超過上限
-         AND (draw_result IS NOT 'selected' OR (SELECT a.max_participants FROM registrations r JOIN activities a ON a.id = r.activity_id WHERE r.id = ?1) >
-           (SELECT COUNT(*) FROM registration_students s2 JOIN registrations r2 ON r2.id = s2.registration_id
-            WHERE r2.activity_id = (SELECT activity_id FROM registrations WHERE id = ?1) AND r2.status != 'cancelled'
-              AND s2.status = 'active' AND s2.draw_result = 'selected'))`
+         AND (draw_result IS NOT 'selected' OR ${ACT('max_participants')} > ${ACTIVE_IN('AND s2.draw_result = \'selected\'')})
+         -- 額滿即截止的營隊：已額滿時不能恢復
+         AND NOT (${ACT('overflow_mode')} = 'close' AND ${ACT('max_participants')} > 0 AND ${ACTIVE_IN('')} >= ${ACT('max_participants')})`
     ).bind(registrationId, Number(studentId)),
     studentAudit(db, admin.email, 'student_restore', registrationId, studentId)
   ]);
-  if (!res.meta.changes) throw new HttpError(409, '此學生目前不是「不參加」狀態，或原錄取名額已由他人遞補');
+  if (!res.meta.changes) throw new HttpError(409, '無法恢復：此學生目前不是「不參加」狀態，或名額已滿／原錄取名額已由他人遞補');
 }
 
 export async function setStudentPaid(db, admin, registrationId, studentId, paid, now = nowIso()) {
@@ -703,7 +714,7 @@ export async function backfillNext(db, admin, activityId, now = nowIso()) {
     throw new HttpError(409, info.vacancies ? '已沒有可遞補的候選者' : '目前沒有空出的名額');
   }
   const promoted = survey
-    ? await db.prepare(`SELECT r.class_code, s.seat_no, s.name, s.draw_rank FROM registration_students s JOIN registrations r ON r.id = s.registration_id WHERE r.activity_id = ?1 AND s.backfilled_at = ?2`).bind(activityId, now).first()
+    ? await db.prepare(`SELECT r.class_code, s.seat_no, s.name, s.draw_rank, s.refunded FROM registration_students s JOIN registrations r ON r.id = s.registration_id WHERE r.activity_id = ?1 AND s.backfilled_at = ?2`).bind(activityId, now).first()
     : await db.prepare(`SELECT class_code, draw_rank FROM registrations WHERE activity_id = ?1 AND backfilled_at = ?2`).bind(activityId, now).first();
   return { promoted, ...(await backfillStatus(db, a)) };
 }
@@ -767,7 +778,7 @@ export function toStudentsCsv(rows, activity = {}) {
     for (const s of r.students) {
       lines.push([r.class_code, s.seat_no, s.name, s.gender === 'M' ? '男' : '女', s.status === 'active' ? '參加' : '不參加',
         ...(lottery ? [s.draw_result ? (s.draw_result === 'selected' && s.backfilled_at ? '錄取（遞補）' : DRAW[s.draw_result]) : '尚未抽籤', s.draw_rank ?? ''] : []),
-        free ? '免費' : s.refunded ? '已退費' : s.paid ? (needsRefund(r, s, activity) ? '已繳（待退費）' : '已繳') : '未繳', free ? '' : taipei(s.refunded ? s.refunded_at : s.paid_at), CSV_STATUS[r.status] || r.status, r.teacher_name, r.teacher_email,
+        free ? '免費' : s.refunded ? (s.status === 'active' && r.status !== 'cancelled' && !activity.cancelled_at && (!lottery || s.draw_result === 'selected') ? '已退費（遞補錄取，需重新收費）' : '已退費') : s.paid ? (needsRefund(r, s, activity) ? '已繳（待退費）' : '已繳') : '未繳', free ? '' : taipei(s.refunded ? s.refunded_at : s.paid_at), CSV_STATUS[r.status] || r.status, r.teacher_name, r.teacher_email,
         r.accompany === 'yes' ? '是' : '否', taipei(r.submitted_at), r.notes]);
     }
   }

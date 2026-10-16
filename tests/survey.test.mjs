@@ -463,3 +463,64 @@ test('open lookup: needs email + class + seat, returns only own masked result th
   const after = [(await look()).data.result.result, (await look({ email: 'b@gmail.com', seat_no: 4 })).data.result.result].sort();
   assert.deepEqual(after, ['selected_backfill', 'withdrawn']);
 });
+
+// ---------- 邏輯檢查修正 ----------
+test('restore after lottery: student withdrawn before the draw joins the end of the waiting list', async () => {
+  const { call, DB } = setup();
+  const id = await openSurvey(call, { max_participants: 2, overflow_mode: 'lottery', min_participants: 0 });
+  await call('/api/registrations', { body: reg(id, '701', roster3(1)), as: T1 });
+  const r = (await call('/api/my/registrations', { as: T1 })).data.registrations[0];
+  const early = r.students[0];
+  await call(`/api/registrations/${r.id}/students/${early.id}/withdraw`, { body: {}, as: T1 });
+  DB.raw.prepare(`UPDATE activities SET deadline_at = '2020-01-01T00:00:00.000Z' WHERE id = ?`).run(id);
+  await call(`/api/admin/activities/${id}/draw`, { body: {}, as: ADMIN });
+  assert.equal((await call(`/api/admin/registrations/${r.id}/students/${early.id}/restore`, { body: {}, as: ADMIN })).status, 200);
+  const s = DB.raw.prepare(`SELECT draw_result, draw_rank FROM registration_students WHERE id = ?`).get(early.id);
+  assert.deepEqual([s.draw_result, s.draw_rank], ['not_selected', 3]);
+});
+
+test('restore in close mode cannot exceed the cap', async () => {
+  const { call } = setup();
+  const id = await openSurvey(call, { max_participants: 3, overflow_mode: 'close', min_participants: 0 });
+  await call('/api/registrations', { body: reg(id, '701', roster3(1)), as: T1 });
+  const r = (await call('/api/my/registrations', { as: T1 })).data.registrations[0];
+  await call(`/api/registrations/${r.id}/students/${r.students[0].id}/withdraw`, { body: {}, as: T1 });
+  assert.equal((await call('/api/registrations', { body: reg(id, '702', roster3(1).slice(0, 1)), as: T2 })).status, 201);
+  const res = await call(`/api/admin/registrations/${r.id}/students/${r.students[0].id}/restore`, { body: {}, as: ADMIN });
+  assert.match(res.data.error, /名額已滿/);
+});
+
+test('refunded student promoted by backfill: flagged for re-payment; lookup shows unpaid', async () => {
+  const { call, DB } = setup();
+  const id = await openSurvey(call, { fill_mode: 'open', max_students_per_class: 30, min_participants: 0, max_participants: 1, overflow_mode: 'lottery' });
+  await call('/api/public/registrations', { body: pub(id) });
+  await call('/api/public/registrations', { body: pub(id, { email: 'b@gmail.com', seat_no: 4, name: '李四' }) });
+  DB.raw.prepare(`UPDATE activities SET deadline_at = '2020-01-01T00:00:00.000Z' WHERE id = ?`).run(id);
+  await call(`/api/admin/activities/${id}/draw`, { body: {}, as: ADMIN });
+  const st = DB.raw.prepare(`SELECT s.id, s.registration_id, s.draw_result FROM registration_students s ORDER BY draw_rank`).all();
+  const [win, lose] = st;
+  const P = (s, p, b) => call(`/api/admin/registrations/${s.registration_id}/students/${s.id}/${p}`, { body: b, as: ADMIN });
+  await P(lose, 'paid', { paid: true });
+  assert.equal((await P(lose, 'refund', { refunded: true })).status, 200);
+  await call(`/api/registrations/${win.registration_id}/students/${win.id}/withdraw`, { body: {}, as: ADMIN });
+  const b = await call(`/api/admin/activities/${id}/backfill`, { body: {}, as: ADMIN });
+  assert.equal(b.data.result.promoted.refunded, 1);
+  const csv = (await call(`/api/admin/activities/${id}/registrations.csv`, { as: ADMIN })).data;
+  assert.match(csv, /需重新收費/);
+  const loseEmail = DB.raw.prepare(`SELECT teacher_email, class_code FROM registrations WHERE id = ?`).get(lose.registration_id);
+  const seat = DB.raw.prepare(`SELECT seat_no FROM registration_students WHERE id = ?`).get(lose.id).seat_no;
+  const look = (await call('/api/public/registrations/lookup', { body: { activity_id: id, email: loseEmail.teacher_email, class_code: loseEmail.class_code, seat_no: seat } })).data.result;
+  assert.deepEqual([look.result, look.paid], ['selected_backfill', false]);
+});
+
+test('a seat marked 不參加 cannot be taken by another email', async () => {
+  const { call, DB } = setup();
+  const id = await openSurvey(call, { fill_mode: 'open', max_students_per_class: 30, min_participants: 0 });
+  await call('/api/public/registrations', { body: pub(id) });
+  const s = DB.raw.prepare(`SELECT id, registration_id FROM registration_students`).get();
+  await call(`/api/registrations/${s.registration_id}/students/${s.id}/withdraw`, { body: {}, as: ADMIN });
+  assert.match((await call('/api/public/registrations', { body: pub(id, { email: 'x@gmail.com' }) })).data.error, /701 班 3 號已經有人報名/);
+  // 整筆取消後才釋出座號
+  DB.raw.prepare(`UPDATE registrations SET status = 'cancelled'`).run();
+  assert.equal((await call('/api/public/registrations', { body: pub(id, { email: 'x@gmail.com' }) })).status, 201);
+});

@@ -75,7 +75,7 @@ GitHub main 推送 ──► Cloudflare Workers Builds（deploy command: npx wra
   - **修改名額**：依同一規則重新計算；調低名額時，較晚報名的優先錄取班級會改為抽籤候選（畫面會先確認）。
   - 每次狀態異動都寫入 `priority_recompute` 稽核紀錄（班級、原狀態、新狀態）。
   - 抽籤後取消不會重新計算。
-- **抽籤後手動遞補**：錄取者不參加時，管理員先取消該班（講座）或將學生標記不參加（營隊），「抽籤作業」會顯示空缺數與依抽籤序的下一位，按「遞補下一位」並確認後錄取。空缺＝講座「優先＋抽籤名額 − 優先錄取與抽籤錄取班數」、營隊「人數上限 − 錄取且參加的學生數」。空缺檢查與更新在同一個 SQL 敘述內，同時按兩次也只會遞補一位。遞補者在名單、「我的報名」與 CSV 標示「錄取（遞補）」，稽核紀錄 `lottery_backfill`。名額已被遞補後，原錄取學生不能再「恢復參加」（避免超過上限）。
+- **抽籤後手動遞補**：錄取者不參加時，管理員先取消該班（講座）或將學生標記不參加（營隊），「抽籤作業」會顯示空缺數與依抽籤序的下一位，按「遞補下一位」並確認後錄取。空缺＝講座「優先＋抽籤名額 − 優先錄取與抽籤錄取班數」、營隊「人數上限 − 錄取且參加的學生數」。空缺檢查與更新在同一個 SQL 敘述內，同時按兩次也只會遞補一位。遞補者在名單、「我的報名」與 CSV 標示「錄取（遞補）」，稽核紀錄 `lottery_backfill`。名額已被遞補後，原錄取學生不能再「恢復參加」（避免超過上限）。抽籤前就標記不參加、抽籤後才恢復的學生沒有參加抽籤，恢復時排到候補名單最後（not_selected，抽籤序接在最後）。「額滿即截止」的營隊已額滿時不能恢復參加。已退費的學生被遞補或恢復參加時，退費區標示「需重新收費」，CSV 顯示「已退費（遞補錄取，需重新收費）」，免登入查詢顯示未繳；重新收費後取消「已退費」勾選即可。
 - 稽核紀錄 `audit_logs`：`login`、`activity_create`、`activity_update`（含修改前後）、`activity_status`、`register`、`registration_cancel`、`priority_recompute`、`lottery_draw`、`lottery_backfill`、`student_withdraw`、`student_restore`、`student_paid`、`student_unpaid`、`student_refunded`、`student_unrefunded`、`allowlist_add`、`allowlist_remove`。
 
 ### 取消與刪除活動
@@ -93,7 +93,7 @@ GitHub main 推送 ──► Cloudflare Workers Builds（deploy command: npx wra
 - **填寫方式**（建立營隊時設定，已有報名後不可切換）：
   - **導師填寫**：導師以班為單位貼上全班參加名單（同活動同班級僅一筆有效報名，部分唯一索引 `uq_reg_active_class_teacher`）。
   - **學生填寫**：學生用自己的 Google 帳號一人一筆填寫班級、座號、姓名、性別（`registrations.submitter = student`，`teacher_name/email` 存學生本人）。同帳號、同班同座號不可重複，每班人數上限以該班已報名學生數計算，皆在單一 SQL 敘述中檢查。學生在報名截止前可在「我的報名」自行取消並重新報名（`POST /api/registrations/:rid/cancel`）。系統不知道導師與班級的對應，學生名單由管理員查看。
-  - **學生填寫・免登入**（`fill_mode = student` 且 `login_required = 0`）：學生不需登入，填寫班級、座號、姓名、性別與 Email（僅檢查格式，不驗證，`registrations.verified = 0`，管理名單標示「信箱未驗證」）。同 Email、同班同座號不可重複；表單含隱藏陷阱欄位擋簡單機器人。截止前以報名時的 Email＋班級＋座號取消（知道這三項者皆可取消，屬便利性取捨）（`POST /api/public/registrations`、`POST /api/public/registrations/cancel`）。活動卡片上有「查詢我的報名／查詢抽籤結果」：同樣輸入 Email＋班級＋座號，只回傳本人的狀態（已報名、尚未抽籤、錄取、錄取（遞補）、未錄取、不參加、已取消）與繳費情形，姓名以「王○明」遮罩，不含其他人資料（`POST /api/public/registrations/lookup`，用 POST 避免 Email 出現在網址）。
+  - **學生填寫・免登入**（`fill_mode = student` 且 `login_required = 0`）：學生不需登入，填寫班級、座號、姓名、性別與 Email（僅檢查格式，不驗證，`registrations.verified = 0`，管理名單標示「信箱未驗證」）。同 Email、同班同座號不可重複（座號只要在未取消的報名中出現過，含已標記不參加者，就不能再被其他人報名，整筆取消後才釋出）；表單含隱藏陷阱欄位擋簡單機器人。截止前以報名時的 Email＋班級＋座號取消（知道這三項者皆可取消，屬便利性取捨）（`POST /api/public/registrations`、`POST /api/public/registrations/cancel`）。活動卡片上有「查詢我的報名／查詢抽籤結果」：同樣輸入 Email＋班級＋座號，只回傳本人的狀態（已報名、尚未抽籤、錄取、錄取（遞補）、未錄取、不參加、已取消）與繳費情形，姓名以「王○明」遮罩，不含其他人資料（`POST /api/public/registrations/lookup`，用 POST 避免 Email 出現在網址）。
 - 「成團門檻」指營隊能否開辦的全校人數門檻，與報名班數無關。
 - 導師報名時填學生名單（座號、姓名、性別），可從 Excel 直接複製三欄貼上，送出前預覽並顯示男女人數。人數一律由名單加總，不另外填寫。
 - 送出後**不能新增學生**；送出的導師在**報名截止前**可把個別學生標記為「不參加」，截止後只有管理員可調整。管理員可恢復參加、登記繳費，並可取消整班（取消後該班可重新報名）。
@@ -157,7 +157,7 @@ npx wrangler dev --local
 
 ## 上線前測試清單
 
-- [x] `npm test` 全部通過（78 項）
+- [x] `npm test` 全部通過（82 項）
 - [x] 本機 `wrangler dev` 端到端：草稿不可報名、優先名額、重複報名、取消、截止前不可抽籤、截止後不可報名、同時抽籤僅一次成功、稽核紀錄筆數正確
 - [x] `@st.tc.edu.tw`、`@tjjh.tc.edu.tw` 帳號可登入；個人 Gmail 被拒絕；`audit_logs` 有 login 紀錄
 - [ ] `scripts/verify-live.sh` 全部 PASS（每次部署後）

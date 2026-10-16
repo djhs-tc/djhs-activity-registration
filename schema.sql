@@ -100,15 +100,6 @@ CREATE TABLE IF NOT EXISTS allowed_emails (
  added_by TEXT NOT NULL,
  added_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
--- 班級導師名單：功能已移除（2026-10-16），資料表暫留，可由管理員在 D1 Console 執行 DROP TABLE class_teachers 刪除。
-CREATE TABLE IF NOT EXISTS class_teachers (
- class_code TEXT PRIMARY KEY,
- teacher_name TEXT NOT NULL,
- teacher_email TEXT NOT NULL,
- updated_by TEXT NOT NULL,
- updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
-);
-CREATE INDEX IF NOT EXISTS idx_class_teachers_email ON class_teachers(teacher_email);
 CREATE TABLE IF NOT EXISTS audit_logs (
  id INTEGER PRIMARY KEY AUTOINCREMENT,
  actor_email TEXT NOT NULL,

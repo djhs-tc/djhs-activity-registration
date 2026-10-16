@@ -55,6 +55,7 @@ GitHub main 推送 ──► Cloudflare Workers Builds（deploy command: npx wra
 | POST | `/api/registrations/:rid/students/:sid/withdraw` | 導師（自己的報名、截止前）／管理員 | 意願調查：標記學生不參加 |
 | POST | `/api/admin/registrations/:rid/students/:sid/restore` | 管理員 | 恢復學生為參加 |
 | POST | `/api/admin/registrations/:rid/students/:sid/paid` | 管理員 | 登記繳費 `{paid: true/false}` |
+| GET / POST | `/api/admin/settings` | 管理員 | 讀取／設定登入政策 `{login_policy}`，值為 `school_only` 或 `any_google` |
 | GET / POST | `/api/admin/allowed-emails` | 管理員 | 帳號名單：列出／加入個人信箱 `{email, note}` |
 | POST | `/api/admin/allowed-emails/batch` | 管理員 | 批次加入 `{entries: [{email, note}]}`，最多 300 筆；任一筆有誤整批不加入，已存在者略過 |
 | POST | `/api/admin/allowed-emails/remove` | 管理員 | 從帳號名單移除 `{email}`（立即失效） |
@@ -99,7 +100,11 @@ GitHub main 推送 ──► Cloudflare Workers Builds（deploy command: npx wra
 
 ## Google 登入設定
 
-登入接受兩種帳號：
+**登入政策**（管理後台「帳號名單」最上方切換，存於 `settings` 資料表，切換寫入稽核紀錄 `login_policy`）：
+- `school_only`（預設）：只限下列兩種帳號。
+- `any_google`：所有已驗證信箱的 Google 帳號皆可登入報名；管理名單中以「個人帳號」標示非學校網域的報名，方便清理。切回 `school_only` 時，個人帳號（不在名單者）立即失效。
+
+`school_only` 時接受兩種帳號：
 1. **學校帳號**：Google Workspace 管理的帳號，ID token 的 `hd` 必須是 `ALLOWED_EMAIL_DOMAINS` 之一（`wrangler.jsonc`，預設 `st.tc.edu.tw,tjjh.tc.edu.tw`）。
 2. **帳號名單上的個人信箱**：管理後台「帳號名單」加入的信箱（例如導師慣用的 Gmail，必須是 Google 帳號）。非學校帳號每次請求都重新檢查名單，移除後立即失效（即使 session cookie 仍有效）。不在名單上的個人帳號一律拒絕。
 
@@ -142,7 +147,7 @@ npx wrangler dev --local
 
 ## 上線前測試清單
 
-- [x] `npm test` 全部通過（61 項）
+- [x] `npm test` 全部通過（62 項）
 - [x] 本機 `wrangler dev` 端到端：草稿不可報名、優先名額、重複報名、取消、截止前不可抽籤、截止後不可報名、同時抽籤僅一次成功、稽核紀錄筆數正確
 - [x] `@st.tc.edu.tw`、`@tjjh.tc.edu.tw` 帳號可登入；個人 Gmail 被拒絕；`audit_logs` 有 login 紀錄
 - [ ] `scripts/verify-live.sh` 全部 PASS（每次部署後）

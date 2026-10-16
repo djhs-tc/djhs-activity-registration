@@ -117,3 +117,30 @@ test('batch add: all-or-nothing validation, skips existing and duplicates, audit
   assert.equal(big.status, 200);
   assert.equal(big.data.result.added.length, 300);
 });
+
+test('login policy any_google: any verified Google account may log in; switching back revokes immediately', async () => {
+  const { call, login, DB } = setup();
+  assert.equal((await call('/api/admin/settings', { as: ADMIN })).data.settings.login_policy, 'school_only');
+  assert.equal((await login('parent@gmail.com')).status, 401);
+  assert.equal((await call('/api/config')).data.openLogin, false);
+
+  assert.equal((await call('/api/admin/settings', { body: { login_policy: 'any_google' }, as: 't@st.tc.edu.tw' })).status, 403);
+  assert.equal((await call('/api/admin/settings', { body: { login_policy: 'nope' }, as: ADMIN })).status, 400);
+  const set = await call('/api/admin/settings', { body: { login_policy: 'any_google' }, as: ADMIN });
+  assert.equal(set.data.settings.login_policy, 'any_google');
+  assert.equal(set.data.settings.updated_by, ADMIN);
+  assert.equal((await call('/api/config')).data.openLogin, true);
+
+  const r = await login('parent@gmail.com');
+  assert.equal(r.status, 200);
+  assert.equal(r.data.user.isAdmin, false);
+  assert.equal((await call('/api/me', { as: 'parent@gmail.com' })).data.user.email, 'parent@gmail.com');
+  assert.equal((await call('/api/admin/activities', { as: 'parent@gmail.com' })).status, 403, 'still not admin');
+
+  await call('/api/admin/settings', { body: { login_policy: 'school_only' }, as: ADMIN });
+  assert.equal((await call('/api/me', { as: 'parent@gmail.com' })).data.user, null, 'revoked immediately');
+  assert.equal((await call('/api/me', { as: 't1@st.tc.edu.tw' })).data.user.email, 't1@st.tc.edu.tw', 'school accounts unaffected');
+  const logs = DB.raw.prepare(`SELECT details_json FROM audit_logs WHERE action='login_policy' ORDER BY id`).all().map(x => JSON.parse(x.details_json));
+  assert.deepEqual(logs, [{ from: 'school_only', to: 'any_google' }, { from: 'any_google', to: 'school_only' }]);
+});
+

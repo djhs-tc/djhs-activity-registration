@@ -68,6 +68,13 @@ CREATE TABLE IF NOT EXISTS registration_students (
  UNIQUE(registration_id, seat_no)
 );
 CREATE INDEX IF NOT EXISTS idx_students_registration ON registration_students(registration_id);
+-- 系統設定：login_policy = school_only（預設，限學校帳號＋名單）| any_google（所有 Google 帳號）
+CREATE TABLE IF NOT EXISTS settings (
+ key TEXT PRIMARY KEY,
+ value TEXT NOT NULL,
+ updated_by TEXT NOT NULL DEFAULT '',
+ updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
 -- 個別允許登入的非學校信箱（學校網域帳號不需加入）
 CREATE TABLE IF NOT EXISTS allowed_emails (
  email TEXT PRIMARY KEY,

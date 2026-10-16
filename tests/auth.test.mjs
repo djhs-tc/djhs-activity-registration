@@ -78,7 +78,7 @@ const ctx = { waitUntil() {} };
 const call = (path, init, env = baseEnv) => worker.fetch(new Request('https://djhs.test' + path, init), env, ctx);
 
 test('auth disabled until configured', async () => {
-  assert.deepEqual(await (await call('/api/config')).json(), { authEnabled: false, googleClientId: '', registrationEnabled: false });
+  assert.deepEqual(await (await call('/api/config')).json(), { authEnabled: false, googleClientId: '', registrationEnabled: false, openLogin: false, schoolDomains: [] });
   assert.equal((await call('/api/auth/nonce')).status, 503);
   assert.deepEqual(await (await call('/api/me')).json(), { user: null });
   assert.equal((await (await call('/api/health')).json()).authentication, 'not-configured');
@@ -135,7 +135,7 @@ test('full login flow sets session cookie and clears nonce', async () => {
 
 test('malformed client ID (e.g. a pasted secret) is never exposed and disables auth', async () => {
   const env = { ...baseEnv, GOOGLE_CLIENT_ID: 'eGc1oU/OL6WTGs6Xq7AzWeQhUkM+abc', SESSION_SECRET: SECRET };
-  assert.deepEqual(await (await call('/api/config', {}, env)).json(), { authEnabled: false, googleClientId: '', registrationEnabled: false });
+  assert.deepEqual(await (await call('/api/config', {}, env)).json(), { authEnabled: false, googleClientId: '', registrationEnabled: false, openLogin: false, schoolDomains: [] });
   const same = { ...baseEnv, GOOGLE_CLIENT_ID: CLIENT_ID, SESSION_SECRET: CLIENT_ID };
   assert.equal((await (await call('/api/config', {}, same)).json()).authEnabled, false);
 });

@@ -2,6 +2,7 @@ import {
   AuthError, authConfig, verifyGoogleIdToken, signSession, readSession, randomToken, isSchoolEmail,
   getCookie, setCookie, SESSION_COOKIE, NONCE_COOKIE, SESSION_TTL_S, NONCE_TTL_S
 } from './auth.js';
+import { getLoginPolicy, setLoginPolicy, getSettings } from './settings.js';
 import { isAllowedEmail, listAllowedEmails, addAllowedEmail, addAllowedEmailsBatch, removeAllowedEmail } from './allowlist.js';
 import { HttpError, json, readJson, nowIso } from './http.js';
 import {
@@ -64,6 +65,8 @@ const ROUTES = [
   ['GET', new RegExp(`^/api/admin/activities/${ID}/calendar\\.ics$`), adminCalendar],
   ['POST', new RegExp(`^/api/admin/registrations/${ID}/students/${SID}/restore$`), adminStudentRestore],
   ['POST', new RegExp(`^/api/admin/registrations/${ID}/students/${SID}/paid$`), adminStudentPaid],
+  ['GET', /^\/api\/admin\/settings$/, adminGetSettings],
+  ['POST', /^\/api\/admin\/settings$/, adminSetSettings],
   ['GET', /^\/api\/admin\/allowed-emails$/, adminListAllowed],
   ['POST', /^\/api\/admin\/allowed-emails$/, adminAddAllowed],
   ['POST', /^\/api\/admin\/allowed-emails\/batch$/, adminBatchAllowed],
@@ -71,13 +74,17 @@ const ROUTES = [
 ];
 
 // ---------- 身分 ----------
+// 非學校帳號：登入政策為 any_google 時一律允許，否則需在帳號名單中
+async function isPersonalAllowed(env, email) {
+  return (await getLoginPolicy(env.DB)) === 'any_google' || isAllowedEmail(env.DB, email);
+}
 async function currentUser(request, env) {
   const cfg = authConfig(env);
   if (!cfg.enabled) return null;
   const s = await readSession(getCookie(request, SESSION_COOKIE), cfg.secret);
   if (!s) return null;
   // 非學校帳號每次都重新檢查名單：管理員移除後立即失效，不必等 session 過期。
-  if (!isSchoolEmail(s.email, cfg.domains) && !(await isAllowedEmail(env.DB, s.email))) return null;
+  if (!isSchoolEmail(s.email, cfg.domains) && !(await isPersonalAllowed(env, s.email))) return null;
   return { email: s.email, name: s.name, isAdmin: cfg.admins.includes(s.email) };
 }
 async function requireUser(request, env) {
@@ -112,7 +119,7 @@ async function publicActivities({ env }) {
 
 async function config({ env }) {
   const cfg = authConfig(env);
-  return json({ authEnabled: cfg.enabled, googleClientId: cfg.enabled ? cfg.clientId : '', registrationEnabled: cfg.enabled });
+  return json({ authEnabled: cfg.enabled, googleClientId: cfg.enabled ? cfg.clientId : '', registrationEnabled: cfg.enabled, openLogin: cfg.enabled && (await getLoginPolicy(env.DB)) === 'any_google', schoolDomains: cfg.enabled ? cfg.domains : [] });
 }
 
 async function me({ request, env }) {
@@ -134,7 +141,7 @@ async function googleLogin({ request, env, ctx }) {
   try {
     user = await verifyGoogleIdToken(body.credential, {
       clientId: cfg.clientId, domains: cfg.domains, nonce: getCookie(request, NONCE_COOKIE),
-      isExtraAllowed: email => isAllowedEmail(env.DB, email)
+      isExtraAllowed: email => isPersonalAllowed(env, email)
     });
   } catch (e) {
     if (e instanceof AuthError) {
@@ -286,6 +293,18 @@ async function adminStudentPaid({ request, env, params }) {
   if (typeof paid !== 'boolean') throw new HttpError(400, 'paid 必須為 true 或 false');
   await setStudentPaid(requireDb(env), admin, params[0], params[1], paid);
   return json({ ok: true });
+}
+
+async function adminGetSettings({ request, env }) {
+  await requireAdmin(request, env);
+  return json({ settings: await getSettings(requireDb(env)) });
+}
+
+async function adminSetSettings({ request, env }) {
+  const admin = await requireAdmin(request, env);
+  const { login_policy } = await readJson(request);
+  await setLoginPolicy(requireDb(env), admin, login_policy);
+  return json({ settings: await getSettings(requireDb(env)) });
 }
 
 async function adminListAllowed({ request, env }) {

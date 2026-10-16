@@ -4,6 +4,7 @@
 
 - 正式網址：https://activity.djhs.workers.dev （2026-10-16 起；舊網址 `djhs-activity-registration.lunary-02c.workers.dev` 已停用）
 - 目前狀態：學校 Google 帳號登入、班級報名（講座：優先錄取＋抽籤；營隊意願調查：學生名單＋男女統計＋繳費登記）、管理後台皆已上線。
+- **接手管理請先看 [HANDOVER.md](HANDOVER.md)（交接手冊：帳號權限、日常操作、出問題時怎麼辦、交接清單）。**
 
 ## 架構
 

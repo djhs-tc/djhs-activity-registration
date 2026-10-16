@@ -28,7 +28,10 @@ CREATE TABLE IF NOT EXISTS activities (
  cancel_reason TEXT NOT NULL DEFAULT '',
  -- 營隊意願調查：每人費用（0 = 免費）與最低開班人數（全校總人數，0 = 不限）
  fee INTEGER NOT NULL DEFAULT 0,
- min_participants INTEGER NOT NULL DEFAULT 0
+ min_participants INTEGER NOT NULL DEFAULT 0,
+ -- 人數上限（全校合計，0 = 不限）與額滿處理：close 額滿即截止；lottery 截止後以學生為單位抽籤
+ max_participants INTEGER NOT NULL DEFAULT 0,
+ overflow_mode TEXT NOT NULL DEFAULT 'close' CHECK(overflow_mode IN ('close','lottery'))
 );
 CREATE TABLE IF NOT EXISTS registrations (
  id TEXT PRIMARY KEY,
@@ -59,6 +62,9 @@ CREATE TABLE IF NOT EXISTS registration_students (
  paid INTEGER NOT NULL DEFAULT 0 CHECK(paid IN (0,1)),
  paid_at TEXT,
  paid_by TEXT,
+ -- 超過名額抽籤的結果（抽籤前為 NULL）
+ draw_result TEXT CHECK(draw_result IN ('selected','not_selected')),
+ draw_rank INTEGER,
  UNIQUE(registration_id, seat_no)
 );
 CREATE INDEX IF NOT EXISTS idx_students_registration ON registration_students(registration_id);

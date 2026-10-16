@@ -178,3 +178,76 @@ test('fee and minimum participants: validated, public, free camps show 免費 in
   const lec = await call('/api/admin/activities', { body: { title: '講座', starts_date: s.date, starts_time: s.time, ends_date: e.date, ends_time: e.time, opens_date: o.date, opens_time: o.time, deadline_date: d.date, deadline_time: d.time, priority_quota: 15, lottery_quota: 3, fee: 500, min_participants: 9, organizer_name: '組長', organizer_email: 'a@st.tc.edu.tw' }, as: ADMIN });
   assert.deepEqual([lec.data.activity.fee, lec.data.activity.min_participants], [0, 0]);
 });
+
+// ---------- 人數上限：額滿即截止／超過名額改抽籤 ----------
+const roster3 = start => [0, 1, 2].map(i => ({ seat_no: start + i, name: 'S' + (start + i), gender: i % 2 ? '女' : '男' }));
+
+test('capacity close mode: rejects rosters that would exceed the cap, counts free up on withdraw', async () => {
+  const { call } = setup();
+  assert.match((await call('/api/admin/activities', { body: surveyBody({ max_participants: 5, min_participants: 6 }), as: ADMIN })).data.error, /不可大於人數上限/);
+  const id = await openSurvey(call, { max_participants: 5, overflow_mode: 'close', min_participants: 0 });
+  assert.equal((await call('/api/registrations', { body: reg(id, '701', roster3(1)), as: T1 })).status, 201);
+  const over = await call('/api/registrations', { body: reg(id, '702', roster3(1)), as: T2 });
+  assert.equal(over.status, 409);
+  assert.match(over.data.error, /剩 2 人，您登記了 3 人/);
+  assert.equal((await call('/api/registrations', { body: reg(id, '702', roster3(1).slice(0, 2)), as: T2 })).status, 201);
+  assert.match((await call('/api/registrations', { body: reg(id, '703', roster3(1).slice(0, 1)), as: 't3@st.tc.edu.tw' })).data.error, /名額已滿/);
+  // 標記不參加後釋出名額
+  const mine = (await call('/api/my/registrations', { as: T1 })).data.registrations[0];
+  await call(`/api/registrations/${mine.id}/students/${mine.students[0].id}/withdraw`, { body: {}, as: T1 });
+  assert.equal((await call('/api/registrations', { body: reg(id, '703', roster3(1).slice(0, 1)), as: 't3@st.tc.edu.tw' })).status, 201);
+  const pub = (await call('/api/activities')).data.activities.find(a => a.id === id);
+  assert.deepEqual([pub.max_participants, pub.overflow_mode, pub.student_count], [5, 'close', 5]);
+});
+
+test('concurrent rosters never exceed the cap in close mode', async () => {
+  const { call } = setup();
+  const id = await openSurvey(call, { max_participants: 5, overflow_mode: 'close', min_participants: 0 });
+  const codes = ['701', '702', '703', '704', '705'];
+  const res = await Promise.all(codes.map((c, i) => call('/api/registrations', { body: reg(id, c, roster3(1).slice(0, 2)), as: `c${i}@st.tc.edu.tw` })));
+  assert.equal(res.filter(r => r.status === 201).length, 2);
+  const adm = (await call('/api/admin/activities', { as: ADMIN })).data.activities.find(a => a.id === id);
+  assert.equal(adm.student_count, 4);
+});
+
+test('capacity lottery mode: accepts over cap, draws students after deadline, once, verifiable', async () => {
+  const { call, DB } = setup();
+  const id = await openSurvey(call, { max_participants: 4, overflow_mode: 'lottery', min_participants: 0 });
+  for (const [i, c] of ['701', '702', '703'].entries()) {
+    assert.equal((await call('/api/registrations', { body: reg(id, c, roster3(1)), as: `l${i}@st.tc.edu.tw` })).status, 201);
+  }
+  // 一位學生標記不參加，不進入抽籤
+  const first = (await call('/api/my/registrations', { as: 'l0@st.tc.edu.tw' })).data.registrations[0];
+  await call(`/api/registrations/${first.id}/students/${first.students[0].id}/withdraw`, { body: {}, as: 'l0@st.tc.edu.tw' });
+  assert.match((await call(`/api/admin/activities/${id}/draw`, { body: {}, as: ADMIN })).data.error, /尚未截止/);
+  DB.raw.prepare(`UPDATE activities SET deadline_at = '2020-01-01T00:00:00.000Z' WHERE id = ?`).run(id);
+  const d = await call(`/api/admin/activities/${id}/draw`, { body: {}, as: ADMIN });
+  assert.equal(d.status, 200, JSON.stringify(d.data));
+  assert.deepEqual([d.data.result.pool_size, d.data.result.selected_count], [8, 4]);
+  assert.equal((await call(`/api/admin/activities/${id}/draw`, { body: {}, as: ADMIN })).status, 409);
+  const rows = DB.raw.prepare('SELECT draw_result, COUNT(*) n FROM registration_students GROUP BY draw_result ORDER BY draw_result').all().map(r => [r.draw_result, r.n]);
+  assert.deepEqual(rows, [[null, 1], ['not_selected', 4], ['selected', 4]]);
+  const mine = (await call('/api/my/registrations', { as: 'l1@st.tc.edu.tw' })).data.registrations[0];
+  assert.ok(mine.students.every(s => ['selected', 'not_selected'].includes(s.draw_result)));
+  const pub = (await call('/api/activities')).data.activities.find(a => a.id === id);
+  assert.equal(pub.selected_students, 4);
+  const csv = (await call(`/api/admin/activities/${id}/registrations.csv`, { as: ADMIN })).data;
+  assert.match(csv, /抽籤結果/);
+  assert.equal((csv.match(/,錄取,/g) || []).length, 4);
+  // 稽核：用種子重算，錄取名單一致
+  const { rankPool } = await import('../src/activities.js');
+  const log = JSON.parse(DB.raw.prepare(`SELECT details_json FROM audit_logs WHERE action='lottery_draw'`).get().details_json);
+  const again = await rankPool(Uint8Array.from(Buffer.from(log.seed, 'hex')), log.pool.map(p => ({ id: 'student:' + p.id, class_code: p.class_code, seat_no: p.seat_no })));
+  assert.deepEqual(again.slice(0, 4).map(r => `${r.class_code}-${r.seat_no}`), log.selected);
+});
+
+test('lottery mode under the cap selects everyone; close mode cannot be drawn', async () => {
+  const { call, DB } = setup();
+  const id = await openSurvey(call, { max_participants: 10, overflow_mode: 'lottery', min_participants: 0 });
+  await call('/api/registrations', { body: reg(id, '701', roster3(1)), as: T1 });
+  DB.raw.prepare(`UPDATE activities SET deadline_at = '2020-01-01T00:00:00.000Z' WHERE id = ?`).run(id);
+  assert.equal((await call(`/api/admin/activities/${id}/draw`, { body: {}, as: ADMIN })).data.result.selected_count, 3);
+  const id2 = await openSurvey(call, { title: '另一營隊', max_participants: 10, overflow_mode: 'close', min_participants: 0 });
+  DB.raw.prepare(`UPDATE activities SET deadline_at = '2020-01-01T00:00:00.000Z' WHERE id = ?`).run(id2);
+  assert.match((await call(`/api/admin/activities/${id2}/draw`, { body: {}, as: ADMIN })).data.error, /不需要抽籤/);
+});

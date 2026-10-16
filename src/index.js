@@ -9,7 +9,7 @@ import {
   listPublicActivities, validateRegistration, register, listMyRegistrations,
   validateActivity, createActivity, updateActivity, setActivityStatus, getActivity, listAdminActivities,
   listRegistrations, cancelRegistration, drawLottery, toCsv, toStudentsCsv, toIcs, cancelActivity, deleteActivity, backfillNext,
-  withdrawStudent, restoreStudent, setStudentPaid, setStudentRefunded, selfCancelRegistration, openRegister, openCancel, openLookup
+  withdrawStudent, restoreStudent, setStudentPaid, setStudentRefunded, selfCancelRegistration, openRegister, openCancel, openLookup, runScheduledDraws
 } from './activities.js';
 
 export default {
@@ -34,6 +34,11 @@ export default {
       }
     }
     return pathMatched ? json({ error: 'Method not allowed' }, 405) : json({ error: 'Not found' }, 404);
+  },
+
+  // Cron Trigger（wrangler.jsonc triggers.crons）：執行到期的自動抽籤
+  async scheduled(event, env, ctx) {
+    if (env.DB) ctx.waitUntil(runScheduledDraws(env.DB));
   }
 };
 

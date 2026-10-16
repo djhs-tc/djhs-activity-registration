@@ -403,3 +403,44 @@ test('manual backfill after lecture lottery: cancelled seat goes to next class b
   assert.match(toCsv(rows), new RegExp(`,${next},.*遞補錄取`));
   assert.equal(DB.raw.prepare(`SELECT COUNT(*) n FROM audit_logs WHERE action='lottery_backfill'`).get().n, 1);
 });
+
+// ---------- 自動抽籤 ----------
+test('draw mode validation: auto needs a time between deadline and start; not-lottery activities ignore it', () => {
+  assert.equal(validateActivity(editBody()).draw_at, null);
+  assert.equal(validateActivity(editBody({ draw_mode: 'manual', draw_date: '2026-11-07', draw_time: '10:00' })).draw_at, null);
+  assert.equal(validateActivity(editBody({ draw_mode: 'auto', draw_date: '2026-11-07', draw_time: '10:00' })).draw_at, '2026-11-07T02:00:00.000Z');
+  assert.throws(() => validateActivity(editBody({ draw_mode: 'auto' })), /自動抽籤/);
+  assert.throws(() => validateActivity(editBody({ draw_mode: 'auto', draw_date: '2026-11-06', draw_time: '11:00' })), /不可早於報名截止/);
+  assert.throws(() => validateActivity(editBody({ draw_mode: 'auto', draw_date: '2026-11-13', draw_time: '10:00' })), /不可晚於活動開始/);
+  assert.throws(() => validateActivity(editBody({ draw_mode: 'x' })), /抽籤方式/);
+  const camp = validateActivity(editBody({ kind: 'survey', max_students_per_class: 30, overflow_mode: 'close', draw_mode: 'auto', draw_date: '2026-11-07', draw_time: '10:00' }));
+  assert.equal(camp.draw_at, null, 'close-mode camp never draws');
+});
+
+test('scheduled draw runs once when due, skips early/cancelled/manual, audited as system', async () => {
+  const { runScheduledDraws } = await import('../src/activities.js');
+  const DB = createD1();
+  const ins = (id, drawAt, extra = '') => DB.raw.prepare(`INSERT INTO activities (id,title,starts_at,ends_at,opens_at,deadline_at,priority_quota,lottery_quota,status,created_by,draw_at${extra ? ',cancelled_at' : ''})
+    VALUES (?,'t','2026-11-12T06:00:00.000Z','2026-11-12T08:00:00.000Z','2026-10-16T00:00:00.000Z','2026-11-06T04:00:00.000Z',1,1,'open','x',?${extra ? ",'2026-11-01T00:00:00.000Z'" : ''})`).run(id, drawAt);
+  ins('A', '2026-11-07T02:00:00.000Z'); ins('B', null); ins('C', '2026-11-07T02:00:00.000Z', 'cancelled');
+  for (const id of ['A', 'B', 'C']) for (let i = 1; i <= 3; i++) {
+    DB.raw.prepare(`INSERT INTO registrations (id,activity_id,class_code,teacher_name,teacher_email,status) VALUES (?,?,?,'n','e',?)`).run(id + i, id, String(700 + i), i === 1 ? 'priority' : 'lottery_pool');
+  }
+  assert.deepEqual(await runScheduledDraws(DB, '2026-11-07T01:59:00.000Z'), []);
+  const r = await runScheduledDraws(DB, '2026-11-07T02:00:00.000Z');
+  assert.deepEqual(r, [{ id: 'A', ok: true }]);
+  assert.deepEqual(await runScheduledDraws(DB, '2026-11-07T02:05:00.000Z'), [], 'already drawn');
+  const st = id => DB.raw.prepare(`SELECT status, lottery_at FROM activities WHERE id = ?`).get(id);
+  assert.equal(st('A').status, 'drawn');
+  assert.equal(st('B').lottery_at, null);
+  assert.equal(st('C').lottery_at, null);
+  assert.equal(DB.raw.prepare(`SELECT actor_email FROM audit_logs WHERE action='lottery_draw'`).get().actor_email, 'system:scheduled');
+  assert.equal(DB.raw.prepare(`SELECT COUNT(*) n FROM registrations WHERE activity_id='A' AND status='selected'`).get().n, 1);
+});
+
+test('worker exposes a scheduled handler', async () => {
+  assert.equal(typeof worker.scheduled, 'function');
+  const waits = [];
+  await worker.scheduled({}, { DB: createD1() }, { waitUntil: p => waits.push(p) });
+  assert.deepEqual(await waits[0], []);
+});

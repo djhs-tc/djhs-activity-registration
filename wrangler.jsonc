@@ -12,6 +12,8 @@
     "database_name": "djhs-activity-db",
     "database_id": "398040fe-bbc4-4ad1-b4cf-41c4a325c4ac"
   }],
+  // 自動抽籤：每 5 分鐘檢查到期的活動（見 src/activities.js runScheduledDraws）
+  "triggers": { "crons": ["*/5 * * * *"] },
   // GOOGLE_CLIENT_ID、SESSION_SECRET、ADMIN_EMAILS 以 Cloudflare Secret 設定（勿在此重複宣告，
   // 否則部署會因 binding 名稱衝突失敗）。三者任一缺少時，登入功能自動停用。
   "vars": {

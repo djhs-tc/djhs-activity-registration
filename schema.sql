@@ -35,7 +35,9 @@ CREATE TABLE IF NOT EXISTS activities (
  -- 營隊填寫方式：teacher 導師以班為單位填名單；student 學生一人一筆
  fill_mode TEXT NOT NULL DEFAULT 'teacher' CHECK(fill_mode IN ('teacher','student')),
  -- 學生填寫時是否需要登入：0 = 免登入自由報名（自填 Email，不驗證）
- login_required INTEGER NOT NULL DEFAULT 1 CHECK(login_required IN (0,1))
+ login_required INTEGER NOT NULL DEFAULT 1 CHECK(login_required IN (0,1)),
+ -- 自動抽籤時間（UTC）；NULL = 手動抽籤。由 Cron Trigger 每 5 分鐘檢查
+ draw_at TEXT
 );
 CREATE TABLE IF NOT EXISTS registrations (
  id TEXT PRIMARY KEY,

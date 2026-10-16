@@ -1,6 +1,6 @@
 import { HttpError, taipeiToUtcIso, nowIso } from './http.js';
 
-const ACTIVITY_COLUMNS = 'id, title, speaker, venue, audience, description, starts_at, ends_at, opens_at, deadline_at, priority_quota, lottery_quota, status, lottery_at, kind, max_students_per_class, organizer_name, cancelled_at, cancel_reason, fee, min_participants, max_participants, overflow_mode, fill_mode, login_required';
+const ACTIVITY_COLUMNS = 'id, title, speaker, venue, audience, description, starts_at, ends_at, opens_at, deadline_at, priority_quota, lottery_quota, status, lottery_at, kind, max_students_per_class, organizer_name, cancelled_at, cancel_reason, fee, min_participants, max_participants, overflow_mode, fill_mode, login_required, draw_at';
 const ACTIVE = "status != 'cancelled'";
 // 班級代碼：年級 7–9 + 班號 01–30，例如 701、815。
 export const CLASS_CODE = /^[789](0[1-9]|[12]\d|30)$/;
@@ -214,7 +214,7 @@ export async function openLookup(db, body) {
   if (!email || !CLASS_CODE.test(classCode) || !Number.isInteger(seat)) throw new HttpError(400, '請輸入報名時的 Email、班級與座號');
   const row = await db.prepare(
     `SELECT r.status AS reg_status, r.submitted_at, s.name, s.status, s.draw_result, s.backfilled_at, s.paid, s.refunded,
-            a.status AS activity_status, a.lottery_at, a.fee, a.cancelled_at, a.cancel_reason, a.overflow_mode, a.max_participants
+            a.status AS activity_status, a.lottery_at, a.draw_at, a.fee, a.cancelled_at, a.cancel_reason, a.overflow_mode, a.max_participants
      FROM registrations r JOIN registration_students s ON s.registration_id = r.id JOIN activities a ON a.id = r.activity_id
      WHERE r.activity_id = ?1 AND r.teacher_email = ?2 AND r.class_code = ?3 AND s.seat_no = ?4 AND r.verified = 0 AND a.status != 'draft'
      ORDER BY (r.status = 'cancelled'), r.submitted_at DESC LIMIT 1`
@@ -233,7 +233,7 @@ export async function openLookup(db, body) {
   const masked = name.length <= 1 ? name.join('') : name.length === 2 ? name[0] + '○' : name[0] + '○'.repeat(name.length - 2) + name[name.length - 1];
   return {
     result, name: masked, submitted_at: row.submitted_at, cancel_reason: row.cancelled_at ? row.cancel_reason : '',
-    fee: Number(row.fee) || 0, paid: Boolean(row.paid), refunded: Boolean(row.refunded)
+    fee: Number(row.fee) || 0, paid: Boolean(row.paid), refunded: Boolean(row.refunded), draw_at: result === 'waiting_draw' ? row.draw_at : null
   };
 }
 
@@ -370,6 +370,12 @@ export function validateActivity(body) {
   if (survey && a.overflow_mode === 'lottery' && !a.max_participants) throw new HttpError(400, '選擇「超過名額改抽籤」時，請填寫人數上限（全校合計）；不限人數則請選「額滿即截止」');
   if (a.max_participants && a.min_participants > a.max_participants) throw new HttpError(400, '最低開班人數不可大於人數上限');
   if (survey && body.overflow_mode !== undefined && !['close', 'lottery'].includes(body.overflow_mode)) throw new HttpError(400, '額滿處理方式錯誤');
+  // 抽籤方式：manual 由管理員按「執行抽籤」；auto 於 draw_at 由排程自動抽籤（只適用需要抽籤的活動）
+  if (body.draw_mode !== undefined && !['manual', 'auto'].includes(body.draw_mode)) throw new HttpError(400, '抽籤方式錯誤');
+  const needsDraw = !survey || a.overflow_mode === 'lottery';
+  a.draw_at = needsDraw && body.draw_mode === 'auto' ? time('draw') : null;
+  if (a.draw_at && a.draw_at < a.deadline_at) throw new HttpError(400, '自動抽籤時間不可早於報名截止時間');
+  if (a.draw_at && a.draw_at > a.starts_at) throw new HttpError(400, '自動抽籤時間不可晚於活動開始時間');
   return a;
 }
 function organizerEmail(v) {
@@ -380,16 +386,16 @@ function organizerEmail(v) {
 const LABELS = {
   title: '活動名稱', speaker: '講師', venue: '地點', audience: '參加對象', description: '活動說明',
   starts: '活動開始', ends: '活動結束', opens: '開放報名', deadline: '報名截止',
-  priority_quota: '優先錄取名額', lottery_quota: '抽籤名額', organizer_name: '承辦人姓名', fee: '費用', min_participants: '最低開班人數', max_participants: '人數上限'
+  priority_quota: '優先錄取名額', lottery_quota: '抽籤名額', organizer_name: '承辦人姓名', fee: '費用', draw: '自動抽籤', min_participants: '最低開班人數', max_participants: '人數上限'
 };
 
 export async function createActivity(db, admin, a) {
   const id = crypto.randomUUID();
   await db.batch([
     db.prepare(
-      `INSERT INTO activities (id, title, speaker, venue, audience, description, starts_at, ends_at, opens_at, deadline_at, priority_quota, lottery_quota, status, created_by, kind, max_students_per_class, organizer_name, organizer_email, fee, min_participants, max_participants, overflow_mode, fill_mode, login_required)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'draft', ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)`
-    ).bind(id, a.title, a.speaker, a.venue, a.audience, a.description, a.starts_at, a.ends_at, a.opens_at, a.deadline_at, a.priority_quota, a.lottery_quota, admin.email, a.kind, a.max_students_per_class, a.organizer_name, a.organizer_email, a.fee, a.min_participants, a.max_participants, a.overflow_mode, a.fill_mode, a.login_required),
+      `INSERT INTO activities (id, title, speaker, venue, audience, description, starts_at, ends_at, opens_at, deadline_at, priority_quota, lottery_quota, status, created_by, kind, max_students_per_class, organizer_name, organizer_email, fee, min_participants, max_participants, overflow_mode, fill_mode, login_required, draw_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'draft', ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)`
+    ).bind(id, a.title, a.speaker, a.venue, a.audience, a.description, a.starts_at, a.ends_at, a.opens_at, a.deadline_at, a.priority_quota, a.lottery_quota, admin.email, a.kind, a.max_students_per_class, a.organizer_name, a.organizer_email, a.fee, a.min_participants, a.max_participants, a.overflow_mode, a.fill_mode, a.login_required, a.draw_at),
     audit(db, admin.email, 'activity_create', id, a)
   ]);
   return getActivity(db, id);
@@ -415,9 +421,9 @@ export async function updateActivity(db, admin, id, a, base) {
   }
   const [res] = await db.batch([
     db.prepare(
-      `UPDATE activities SET title=?2, speaker=?3, venue=?4, audience=?5, description=?6, starts_at=?7, ends_at=?8, opens_at=?9, deadline_at=?10, priority_quota=?11, lottery_quota=?12, max_students_per_class=?13, organizer_name=?14, organizer_email=?15, fee=?16, min_participants=?17, max_participants=?18, overflow_mode=?19, fill_mode=?20, login_required=?21
+      `UPDATE activities SET title=?2, speaker=?3, venue=?4, audience=?5, description=?6, starts_at=?7, ends_at=?8, opens_at=?9, deadline_at=?10, priority_quota=?11, lottery_quota=?12, max_students_per_class=?13, organizer_name=?14, organizer_email=?15, fee=?16, min_participants=?17, max_participants=?18, overflow_mode=?19, fill_mode=?20, login_required=?21, draw_at=?22
        WHERE id = ?1 AND status IN ('draft','open','closed') AND lottery_at IS NULL`
-    ).bind(id, a.title, a.speaker, a.venue, a.audience, a.description, a.starts_at, a.ends_at, a.opens_at, a.deadline_at, a.priority_quota, a.lottery_quota, a.max_students_per_class, a.organizer_name, a.organizer_email, a.fee, a.min_participants, a.max_participants, a.overflow_mode, a.fill_mode, a.login_required),
+    ).bind(id, a.title, a.speaker, a.venue, a.audience, a.description, a.starts_at, a.ends_at, a.opens_at, a.deadline_at, a.priority_quota, a.lottery_quota, a.max_students_per_class, a.organizer_name, a.organizer_email, a.fee, a.min_participants, a.max_participants, a.overflow_mode, a.fill_mode, a.login_required, a.draw_at),
     db.prepare(
       `INSERT INTO audit_logs (actor_email, action, activity_id, details_json) SELECT ?1, 'activity_update', ?2, ?3 WHERE changes() = 1`
     ).bind(admin.email, id, JSON.stringify({ before: pick(before), after: a })),
@@ -427,7 +433,7 @@ export async function updateActivity(db, admin, id, a, base) {
   return getActivity(db, id);
 }
 const EDITABLE = ['draft', 'open', 'closed'];
-const pick = r => Object.fromEntries(['title', 'speaker', 'venue', 'audience', 'description', 'starts_at', 'ends_at', 'opens_at', 'deadline_at', 'priority_quota', 'lottery_quota', 'kind', 'max_students_per_class', 'organizer_name', 'organizer_email', 'fee', 'min_participants', 'max_participants', 'overflow_mode', 'fill_mode', 'login_required'].map(k => [k, r[k]]));
+const pick = r => Object.fromEntries(['title', 'speaker', 'venue', 'audience', 'description', 'starts_at', 'ends_at', 'opens_at', 'deadline_at', 'priority_quota', 'lottery_quota', 'kind', 'max_students_per_class', 'organizer_name', 'organizer_email', 'fee', 'min_participants', 'max_participants', 'overflow_mode', 'fill_mode', 'login_required', 'draw_at'].map(k => [k, r[k]]));
 
 // 抽籤前的單一規則：有效報名（priority + lottery_pool）依送出時間排序，前 N 班為 priority，其餘為 lottery_pool。
 // 回傳兩個敘述，放進同一個 batch（交易）：先記錄將變動的班級，再更新狀態。
@@ -554,6 +560,22 @@ export async function cancelRegistration(db, admin, activityId, registrationId, 
     ...recomputePriority(db, activityId, admin.email, 'registration_cancel')
   ]);
   if (!res.meta.changes) throw new HttpError(404, '找不到此報名或已取消');
+}
+
+// ---------- 自動抽籤（Cron Trigger 每 5 分鐘呼叫） ----------
+// 到了 draw_at、報名已截止、尚未抽籤且未取消的活動，以「system:scheduled」身分執行與手動相同的抽籤（只會成功一次）。
+export const SCHEDULER = { email: 'system:scheduled' };
+export async function runScheduledDraws(db, now = nowIso()) {
+  const { results } = await db.prepare(
+    `SELECT id FROM activities WHERE draw_at IS NOT NULL AND draw_at <= ?1 AND deadline_at <= ?1
+       AND lottery_at IS NULL AND cancelled_at IS NULL AND status IN ('open','closed')`
+  ).bind(now).all();
+  const out = [];
+  for (const { id } of results || []) {
+    try { await drawLottery(db, SCHEDULER, id, now); out.push({ id, ok: true }); }
+    catch (e) { out.push({ id, ok: false, error: e.message }); console.error('scheduled draw failed', id, e.message); }
+  }
+  return out;
 }
 
 // ---------- 抽籤 ----------

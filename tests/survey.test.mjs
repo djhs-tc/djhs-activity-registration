@@ -313,7 +313,7 @@ test('concurrent student submissions for the same seat: only one succeeds', asyn
 // ---------- 免登入自由報名（自填 Email） ----------
 const pub = (id, over = {}) => ({ activity_id: id, class_code: '701', seat_no: 3, name: '王小明', gender: '男', email: 'Kid@Gmail.com', notes: '', ...over });
 
-test('open registration: no login, email kept unverified, dedupe by email and seat, cancel code', async () => {
+test('open registration: no login, email kept unverified, dedupe by email and seat, cancel by email+class+seat', async () => {
   const { call, DB } = setup();
   const id = await openSurvey(call, { fill_mode: 'open', max_students_per_class: 30, min_participants: 0 });
   const act = (await call('/api/activities')).data.activities.find(a => a.id === id);
@@ -321,22 +321,46 @@ test('open registration: no login, email kept unverified, dedupe by email and se
 
   const r = await call('/api/public/registrations', { body: pub(id) });
   assert.equal(r.status, 201, JSON.stringify(r.data));
-  assert.match(r.data.cancel_code, /^[A-HJ-NP-Z2-9]{8}$/);
-  const row = DB.raw.prepare('SELECT teacher_email, teacher_name, submitter, verified, cancel_hash FROM registrations').get();
+  assert.equal(r.data.cancel_code, undefined, 'no cancel code any more');
+  const row = DB.raw.prepare('SELECT teacher_email, teacher_name, submitter, verified FROM registrations').get();
   assert.deepEqual([row.teacher_email, row.teacher_name, row.submitter, row.verified], ['kid@gmail.com', '王小明', 'student', 0]);
-  assert.ok(row.cancel_hash && row.cancel_hash !== r.data.cancel_code, 'only the hash is stored');
 
   assert.match((await call('/api/public/registrations', { body: pub(id, { seat_no: 4 }) })).data.error, /這個 Email 已經報名過/);
   assert.match((await call('/api/public/registrations', { body: pub(id, { email: 'other@gmail.com' }) })).data.error, /701 班 3 號已經有人報名/);
   assert.match((await call('/api/public/registrations', { body: pub(id, { email: 'bad' }) })).data.error, /Email/);
   assert.equal((await call('/api/public/registrations', { body: pub(id, { email: 'bot@x.com', seat_no: 9, website: 'http://spam' }) })).status, 400, 'honeypot');
 
-  // 取消：錯誤取消碼失敗；正確取消碼成功；之後可重新報名
-  assert.equal((await call('/api/public/registrations/cancel', { body: { activity_id: id, email: 'kid@gmail.com', code: 'AAAAAAAA' } })).status, 409);
-  assert.equal((await call('/api/public/registrations/cancel', { body: { activity_id: id, email: 'KID@gmail.com', code: r.data.cancel_code.toLowerCase() } })).status, 200);
-  assert.equal((await call('/api/public/registrations', { body: pub(id) })).status, 201);
+  // 取消：Email、班級、座號必須都相符
+  const cancel = over => call('/api/public/registrations/cancel', { body: { activity_id: id, email: 'kid@gmail.com', class_code: '701', seat_no: 3, ...over } });
+  assert.equal((await cancel({ seat_no: 4 })).status, 409);
+  assert.equal((await cancel({ class_code: '702' })).status, 409);
+  assert.equal((await cancel({ email: 'other@gmail.com' })).status, 409);
+  assert.equal((await cancel({ email: 'KID@Gmail.com' })).status, 200);
+  assert.equal((await cancel({})).status, 409, 'already cancelled');
+  assert.equal((await call('/api/public/registrations', { body: pub(id) })).status, 201, 're-register after cancel');
+  // 截止後不能取消
+  DB.raw.prepare(`UPDATE activities SET deadline_at = '2020-01-01T00:00:00.000Z' WHERE id = ?`).run(id);
+  assert.equal((await cancel({})).status, 409);
   const list = (await call(`/api/admin/activities/${id}/registrations`, { as: ADMIN })).data.registrations;
   assert.ok(list.every(x => x.verified === 0));
+});
+
+test('class count ignores registrations whose students are all withdrawn', async () => {
+  const { call } = setup();
+  const id = await openSurvey(call, { min_participants: 0 });
+  await call('/api/registrations', { body: reg(id, '701', [{ seat_no: 1, name: 'A', gender: '男' }]), as: T1 });
+  await call('/api/registrations', { body: reg(id, '702', [{ seat_no: 2, name: 'B', gender: '女' }]), as: T2 });
+  const mine = (await call('/api/my/registrations', { as: T1 })).data.registrations[0];
+  await call(`/api/registrations/${mine.id}/students/${mine.students[0].id}/withdraw`, { body: {}, as: T1 });
+  assert.equal((await call('/api/activities')).data.activities.find(a => a.id === id).registered_count, 1);
+  assert.equal((await call('/api/admin/activities', { as: ADMIN })).data.activities.find(a => a.id === id).registered_count, 1);
+});
+
+test('lottery overflow requires a participant cap', async () => {
+  const { call } = setup();
+  const res = await call('/api/admin/activities', { body: surveyBody({ overflow_mode: 'lottery', max_participants: 0, min_participants: 0 }), as: ADMIN });
+  assert.equal(res.status, 400);
+  assert.match(res.data.error, /請填寫人數上限/);
 });
 
 test('open registration is refused for activities that require login', async () => {

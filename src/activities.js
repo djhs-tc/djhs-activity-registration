@@ -16,7 +16,7 @@ const STUDENT_COUNTS = alias => `${studentCount(alias)} AS student_count, ${stud
 // ---------- 公開（不含學生個資，只有總數） ----------
 export async function listPublicActivities(db, now = nowIso()) {
   const { results } = await db.prepare(
-    `SELECT ${ACTIVITY_COLUMNS}, (SELECT COUNT(*) FROM registrations r WHERE r.activity_id = a.id AND r.${ACTIVE}) AS registered_count, ${STUDENT_COUNTS('a')}
+    `SELECT ${ACTIVITY_COLUMNS}, (SELECT COUNT(*) FROM registrations r WHERE r.activity_id = a.id AND r.${ACTIVE} AND (a.kind != 'survey' OR EXISTS (SELECT 1 FROM registration_students s WHERE s.registration_id = r.id AND s.status = 'active'))) AS registered_count, ${STUDENT_COUNTS('a')}
      FROM activities a WHERE status IN ('open','closed','drawn') AND ends_at > ?1 ORDER BY starts_at ASC LIMIT 50`
   ).bind(now).all();
   return results || [];
@@ -124,7 +124,7 @@ export async function register(db, user, input, now = nowIso(), opts = {}) {
     if (now < a.opens_at) throw new HttpError(409, '尚未開放報名');
     if (studentFill && a.status === 'open' && now < a.deadline_at) {
       const mine = await db.prepare(`SELECT class_code FROM registrations WHERE activity_id = ?1 AND teacher_email = ?2 AND status != 'cancelled' AND submitter = 'student'`).bind(input.activityId, user.email).first();
-      if (mine) throw new HttpError(409, verified ? `您已經報名過此營隊（${mine.class_code} 班）。如需更改，請先到「我的報名」取消後再重新報名。` : `這個 Email 已經報名過此營隊（${mine.class_code} 班）。如需更改，請用取消碼取消後再重新報名。`);
+      if (mine) throw new HttpError(409, verified ? `您已經報名過此營隊（${mine.class_code} 班）。如需更改，請先到「我的報名」取消後再重新報名。` : `這個 Email 已經報名過此營隊（${mine.class_code} 班）。如需更改，請先取消後再重新報名。`);
       const { taken, inClass } = await db.prepare(
         `SELECT ${CLASS_STUDENTS('a', ' AND s3.seat_no = ?3')} AS taken, ${CLASS_STUDENTS('a')} AS inClass FROM activities a WHERE a.id = ?1`
       ).bind(input.activityId, input.classCode, seat).first();
@@ -164,10 +164,6 @@ function attachStudents(regs, students) {
 }
 
 // ---------- 免登入自由報名（學生自填 Email 留存，不驗證） ----------
-const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // 去除易混淆的 I O 0 1
-async function sha256Hex(text) {
-  return [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text)))].map(b => b.toString(16).padStart(2, '0')).join('');
-}
 const OPEN_EMAIL = /^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$/;
 
 export async function openRegister(db, body, now = nowIso()) {
@@ -182,31 +178,32 @@ export async function openRegister(db, body, now = nowIso()) {
   const notes = String(body.notes || '').trim();
   if (notes.length > 200) throw new HttpError(400, '備註請在 200 字以內');
   const students = validateStudents([{ seat_no: body.seat_no, name: body.name, gender: body.gender }]);
-  const code = [...crypto.getRandomValues(new Uint8Array(8))].map(b => CODE_ALPHABET[b % CODE_ALPHABET.length]).join('');
   const registration = await register(db, { email }, { activityId, classCode, teacherName: students[0].name, accompany: 'no', notes, students }, now,
-    { verified: 0, cancelHash: await sha256Hex(code) });
-  return { registration, cancel_code: code };
+    { verified: 0 });
+  return { registration };
 }
 
-// 免登入報名的取消：Email + 取消碼，報名截止前有效
+// 免登入報名的取消：輸入報名時的 Email＋班級＋座號，報名截止前有效（知道這三項的人都能取消，屬便利性取捨）
 export async function openCancel(db, body, now = nowIso()) {
   const email = String(body.email || '').trim().toLowerCase();
-  const code = String(body.code || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
-  if (!email || code.length !== 8) throw new HttpError(400, '請輸入報名時的 Email 與 8 碼取消碼');
-  const hash = await sha256Hex(code);
+  const classCode = String(body.class_code || '').trim();
+  const seat = Number(body.seat_no);
+  if (!email || !CLASS_CODE.test(classCode) || !Number.isInteger(seat)) throw new HttpError(400, '請輸入報名時的 Email、班級與座號');
+  const match = `activity_id = ?1 AND teacher_email = ?2 AND class_code = ?3 AND verified = 0
+    AND EXISTS (SELECT 1 FROM registration_students s WHERE s.registration_id = registrations.id AND s.seat_no = ?4)`;
   const [res] = await db.batch([
     db.prepare(
       `UPDATE registrations SET status = 'cancelled'
-       WHERE activity_id = ?1 AND teacher_email = ?2 AND cancel_hash = ?3 AND verified = 0 AND status != 'cancelled'
-         AND EXISTS (SELECT 1 FROM activities a WHERE a.id = ?1 AND a.status = 'open' AND a.deadline_at > ?4 AND a.cancelled_at IS NULL)`
-    ).bind(String(body.activity_id || ''), email, hash, now),
+       WHERE ${match} AND status != 'cancelled'
+         AND EXISTS (SELECT 1 FROM activities a WHERE a.id = ?1 AND a.status = 'open' AND a.deadline_at > ?5 AND a.cancelled_at IS NULL)`
+    ).bind(String(body.activity_id || ''), email, classCode, seat, now),
     db.prepare(
       `INSERT INTO audit_logs (actor_email, action, activity_id, details_json)
-       SELECT ?2, 'registration_cancel', activity_id, json_object('registration_id', id, 'class_code', class_code, 'reason', 'self (cancel code)')
-       FROM registrations WHERE activity_id = ?1 AND teacher_email = ?2 AND cancel_hash = ?3 AND status = 'cancelled' AND changes() = 1`
-    ).bind(String(body.activity_id || ''), email, hash)
+       SELECT ?2, 'registration_cancel', activity_id, json_object('registration_id', id, 'class_code', class_code, 'reason', 'self (email)')
+       FROM registrations WHERE ${match} AND status = 'cancelled' AND changes() = 1`
+    ).bind(String(body.activity_id || ''), email, classCode, seat)
   ]);
-  if (!res.meta.changes) throw new HttpError(409, '取消失敗：Email 或取消碼不正確，或報名已截止');
+  if (!res.meta.changes) throw new HttpError(409, '取消失敗：找不到符合的報名（請確認 Email、班級、座號），或報名已截止');
 }
 
 // 學生填寫的報名：本人在報名截止前可自行取消（取消後可重新報名）；截止後請洽承辦人。
@@ -319,6 +316,7 @@ export function validateActivity(body) {
   if (a.ends_at <= a.starts_at) throw new HttpError(400, '活動結束時間必須晚於開始時間');
   if (a.deadline_at <= a.opens_at) throw new HttpError(400, '報名截止時間必須晚於開放報名時間');
   if (a.deadline_at > a.starts_at) throw new HttpError(400, '報名截止時間不可晚於活動開始時間');
+  if (survey && a.overflow_mode === 'lottery' && !a.max_participants) throw new HttpError(400, '選擇「超過名額改抽籤」時，請填寫人數上限（全校合計）；不限人數則請選「額滿即截止」');
   if (a.max_participants && a.min_participants > a.max_participants) throw new HttpError(400, '最低開班人數不可大於人數上限');
   if (survey && body.overflow_mode !== undefined && !['close', 'lottery'].includes(body.overflow_mode)) throw new HttpError(400, '額滿處理方式錯誤');
   return a;
@@ -472,7 +470,7 @@ export async function listAdminActivities(db) {
        (SELECT COUNT(*) FROM registrations r WHERE r.activity_id = a.id AND r.status = 'selected') AS selected_count,
        (SELECT COUNT(*) FROM registrations r WHERE r.activity_id = a.id AND r.status = 'not_selected') AS not_selected_count,
        (SELECT COUNT(*) FROM registrations r WHERE r.activity_id = a.id AND r.status = 'cancelled') AS cancelled_count,
-       (SELECT COUNT(*) FROM registrations r WHERE r.activity_id = a.id AND r.status = 'pending') AS registered_count,
+       (SELECT COUNT(*) FROM registrations r WHERE r.activity_id = a.id AND r.status = 'pending' AND EXISTS (SELECT 1 FROM registration_students s WHERE s.registration_id = r.id AND s.status = 'active')) AS registered_count,
        (SELECT COUNT(*) FROM registrations r WHERE r.activity_id = a.id) AS total_registrations,
        ${STUDENT_COUNTS('a')}
      FROM activities a ORDER BY starts_at DESC`
@@ -550,7 +548,8 @@ export async function drawLottery(db, admin, activityId, now = nowIso(), seedByt
 // 營隊超過名額抽籤（以學生為單位）：與講座相同的可稽核方式，排序鍵 = HMAC-SHA256(種子, 'student:' + 學生 id)。
 // 有效學生（未取消報名、未標記不參加）不超過上限時，全部錄取。
 async function drawSurveyLottery(db, admin, activity, now, seedBytes) {
-  if (activity.overflow_mode !== 'lottery' || !activity.max_participants) throw new HttpError(409, '此營隊不需要抽籤（未設定「超過名額改抽籤」）');
+  if (activity.overflow_mode !== 'lottery') throw new HttpError(409, '此營隊不需要抽籤（額滿處理為「額滿即截止」）');
+  if (!activity.max_participants) throw new HttpError(409, '此營隊不需要抽籤：人數上限為 0（不限），不會超額。若要抽籤，請先在活動設定填寫人數上限');
   if (activity.cancelled_at) throw new HttpError(409, '活動已取消，不能抽籤');
   if (activity.lottery_at) throw new HttpError(409, '此活動已經抽過籤，不可重複抽籤');
   if (!['open', 'closed'].includes(activity.status)) throw new HttpError(409, '活動狀態不允許抽籤');

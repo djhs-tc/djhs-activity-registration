@@ -79,6 +79,10 @@ CREATE TABLE IF NOT EXISTS registration_students (
  draw_rank INTEGER,
  -- 抽籤後依抽籤序遞補錄取的時間（營隊以學生為單位）
  backfilled_at TEXT,
+ -- 已繳費但不參加、未錄取、整班取消或活動取消者，退費後登記
+ refunded INTEGER NOT NULL DEFAULT 0 CHECK(refunded IN (0,1)),
+ refunded_at TEXT,
+ refunded_by TEXT,
  UNIQUE(registration_id, seat_no)
 );
 CREATE INDEX IF NOT EXISTS idx_students_registration ON registration_students(registration_id);
@@ -96,6 +100,15 @@ CREATE TABLE IF NOT EXISTS allowed_emails (
  added_by TEXT NOT NULL,
  added_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
+-- 班級導師名單（個資：僅管理員可見）。有登記的班級，導師填寫的活動只有該班導師能報名；導師可在「我的報名」查看本班學生。
+CREATE TABLE IF NOT EXISTS class_teachers (
+ class_code TEXT PRIMARY KEY,
+ teacher_name TEXT NOT NULL,
+ teacher_email TEXT NOT NULL,
+ updated_by TEXT NOT NULL,
+ updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_class_teachers_email ON class_teachers(teacher_email);
 CREATE TABLE IF NOT EXISTS audit_logs (
  id INTEGER PRIMARY KEY AUTOINCREMENT,
  actor_email TEXT NOT NULL,

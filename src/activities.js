@@ -81,6 +81,12 @@ export async function register(db, user, input, now = nowIso(), opts = {}) {
   // 學生填寫時，填寫人姓名即學生姓名
   if (studentFill) input = { ...input, teacherName: input.students[0].name, accompany: 'no' };
   const submitter = studentFill ? 'student' : 'teacher';
+  if (!studentFill && !user.isAdmin) {
+    const ct = await db.prepare('SELECT teacher_name, teacher_email FROM class_teachers WHERE class_code = ?1').bind(input.classCode).first();
+    if (ct && ct.teacher_email !== String(user.email || '').toLowerCase()) {
+      throw new HttpError(403, `${input.classCode} 班的導師登記為 ${ct.teacher_name}，只有該班導師可以報名；如有異動請洽教學組`);
+    }
+  }
   const seat = studentFill ? input.students[0].seat_no : 0;
   const id = crypto.randomUUID();
   let results;
@@ -141,7 +147,7 @@ export async function register(db, user, input, now = nowIso(), opts = {}) {
   return db.prepare('SELECT id, activity_id, class_code, status, submitted_at FROM registrations WHERE id = ?1').bind(id).first();
 }
 
-const STUDENT_COLUMNS = 's.id, s.registration_id, s.seat_no, s.name, s.gender, s.status, s.withdrawn_at, s.withdrawn_by, s.paid, s.paid_at, s.paid_by, s.draw_result, s.draw_rank, s.backfilled_at';
+const STUDENT_COLUMNS = 's.id, s.registration_id, s.seat_no, s.name, s.gender, s.status, s.withdrawn_at, s.withdrawn_by, s.paid, s.paid_at, s.paid_by, s.draw_result, s.draw_rank, s.backfilled_at, s.refunded, s.refunded_at, s.refunded_by';
 
 export async function listMyRegistrations(db, email) {
   const { results } = await db.prepare(
@@ -154,6 +160,23 @@ export async function listMyRegistrations(db, email) {
     `SELECT ${STUDENT_COLUMNS} FROM registration_students s JOIN registrations r ON r.id = s.registration_id
      WHERE r.teacher_email = ?1 ORDER BY s.seat_no`
   ).bind(email).all();
+  return attachStudents(results || [], students || []);
+}
+
+export async function listClassStudents(db, classes) {
+  if (!classes.length) return [];
+  const list = JSON.stringify(classes);
+  const { results } = await db.prepare(
+    `SELECT r.id, r.activity_id, r.class_code, r.status, r.submitter, r.submitted_at, r.teacher_name,
+            a.title, a.starts_at, a.deadline_at, a.fee, a.lottery_at, a.cancelled_at, a.fill_mode, a.overflow_mode, a.max_participants
+     FROM registrations r JOIN activities a ON a.id = r.activity_id
+     WHERE a.kind = 'survey' AND a.status != 'archived' AND r.status != 'cancelled' AND r.class_code IN (SELECT value FROM json_each(?1))
+     ORDER BY a.starts_at, r.class_code`
+  ).bind(list).all();
+  const { results: students } = await db.prepare(
+    `SELECT ${STUDENT_COLUMNS} FROM registration_students s JOIN registrations r ON r.id = s.registration_id JOIN activities a ON a.id = r.activity_id
+     WHERE a.kind = 'survey' AND a.status != 'archived' AND r.status != 'cancelled' AND r.class_code IN (SELECT value FROM json_each(?1)) ORDER BY s.seat_no`
+  ).bind(list).all();
   return attachStudents(results || [], students || []);
 }
 
@@ -257,11 +280,26 @@ export async function setStudentPaid(db, admin, registrationId, studentId, paid,
   const [res] = await db.batch([
     db.prepare(
       `UPDATE registration_students SET paid = ?3, paid_at = CASE WHEN ?3 = 1 THEN ?4 END, paid_by = CASE WHEN ?3 = 1 THEN ?5 END
-       WHERE id = ?2 AND registration_id = ?1 AND paid != ?3`
+       WHERE id = ?2 AND registration_id = ?1 AND paid != ?3 AND (?3 = 1 OR refunded = 0)`
     ).bind(registrationId, Number(studentId), paid ? 1 : 0, now, admin.email),
     studentAudit(db, admin.email, paid ? 'student_paid' : 'student_unpaid', registrationId, studentId)
   ]);
-  if (!res.meta.changes) throw new HttpError(409, '繳費狀態未變更');
+  if (!res.meta.changes) throw new HttpError(409, '繳費狀態未變更（已退費者請先取消退費登記）');
+}
+
+// 退費登記：只限已繳費、且不參加／未錄取／整班取消／活動取消的學生；取消退費登記則不限。
+export async function setStudentRefunded(db, admin, registrationId, studentId, refunded, now = nowIso()) {
+  const [res] = await db.batch([
+    db.prepare(
+      `UPDATE registration_students SET refunded = ?3, refunded_at = CASE WHEN ?3 = 1 THEN ?4 END, refunded_by = CASE WHEN ?3 = 1 THEN ?5 END
+       WHERE id = ?2 AND registration_id = ?1 AND refunded != ?3 AND paid = 1
+         AND (?3 = 0 OR status = 'withdrawn' OR draw_result = 'not_selected' OR EXISTS (
+           SELECT 1 FROM registrations r JOIN activities a ON a.id = r.activity_id
+           WHERE r.id = ?1 AND (r.status = 'cancelled' OR a.cancelled_at IS NOT NULL)))`
+    ).bind(registrationId, Number(studentId), refunded ? 1 : 0, now, admin.email),
+    studentAudit(db, admin.email, refunded ? 'student_refunded' : 'student_unrefunded', registrationId, studentId)
+  ]);
+  if (!res.meta.changes) throw new HttpError(409, '無法變更：只有已繳費且不參加、未錄取或已取消的學生可以登記退費');
 }
 
 function studentAudit(db, actor, action, registrationId, studentId) {
@@ -684,18 +722,22 @@ export function toCsv(rows) {
 }
 
 // 意願調查：一位學生一列，供收費對帳。
+export function needsRefund(r, s, activity = {}) {
+  return Boolean(s.paid && !s.refunded && (s.status === 'withdrawn' || s.draw_result === 'not_selected' || r.status === 'cancelled' || activity.cancelled_at));
+}
+
 export function toStudentsCsv(rows, activity = {}) {
   const free = !Number(activity.fee);
   const lottery = activity.overflow_mode === 'lottery' && Number(activity.max_participants) > 0;
   const DRAW = { selected: '錄取', not_selected: '未錄取' };
   const student = activity.fill_mode === 'student';
-  const head = ['班級', '座號', '姓名', '性別', '參加', ...(lottery ? ['抽籤結果', '抽籤序'] : []), '繳費', '繳費登記時間（臺灣）', '報名狀態', student ? '填寫人' : '導師', 'Email', '隨班', '報名時間（臺灣）', '備註'];
+  const head = ['班級', '座號', '姓名', '性別', '參加', ...(lottery ? ['抽籤結果', '抽籤序'] : []), '繳費', '繳費／退費登記時間（臺灣）', '報名狀態', student ? '填寫人' : '導師', 'Email', '隨班', '報名時間（臺灣）', '備註'];
   const lines = [];
   for (const r of [...rows].sort((x, y) => x.class_code.localeCompare(y.class_code))) {
     for (const s of r.students) {
       lines.push([r.class_code, s.seat_no, s.name, s.gender === 'M' ? '男' : '女', s.status === 'active' ? '參加' : '不參加',
         ...(lottery ? [s.draw_result ? (s.draw_result === 'selected' && s.backfilled_at ? '錄取（遞補）' : DRAW[s.draw_result]) : '尚未抽籤', s.draw_rank ?? ''] : []),
-        free ? '免費' : s.paid ? '已繳' : '未繳', free ? '' : taipei(s.paid_at), CSV_STATUS[r.status] || r.status, r.teacher_name, r.teacher_email,
+        free ? '免費' : s.refunded ? '已退費' : s.paid ? (needsRefund(r, s, activity) ? '已繳（待退費）' : '已繳') : '未繳', free ? '' : taipei(s.refunded ? s.refunded_at : s.paid_at), CSV_STATUS[r.status] || r.status, r.teacher_name, r.teacher_email,
         r.accompany === 'yes' ? '是' : '否', taipei(r.submitted_at), r.notes]);
     }
   }

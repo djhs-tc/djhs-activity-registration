@@ -4,12 +4,13 @@ import {
 } from './auth.js';
 import { getLoginPolicy, setLoginPolicy, getSettings } from './settings.js';
 import { isAllowedEmail, listAllowedEmails, addAllowedEmail, addAllowedEmailsBatch, removeAllowedEmail } from './allowlist.js';
+import { listClassTeachers, setClassTeachersBatch, removeClassTeacher, myClasses } from './classteachers.js';
 import { HttpError, json, readJson, nowIso } from './http.js';
 import {
   listPublicActivities, validateRegistration, register, listMyRegistrations,
   validateActivity, createActivity, updateActivity, setActivityStatus, getActivity, listAdminActivities,
   listRegistrations, cancelRegistration, drawLottery, toCsv, toStudentsCsv, toIcs, cancelActivity, deleteActivity, backfillNext,
-  withdrawStudent, restoreStudent, setStudentPaid, selfCancelRegistration, openRegister, openCancel
+  withdrawStudent, restoreStudent, setStudentPaid, setStudentRefunded, listClassStudents, selfCancelRegistration, openRegister, openCancel
 } from './activities.js';
 
 export default {
@@ -70,8 +71,13 @@ const ROUTES = [
   ['GET', new RegExp(`^/api/admin/activities/${ID}/calendar\\.ics$`), adminCalendar],
   ['POST', new RegExp(`^/api/admin/registrations/${ID}/students/${SID}/restore$`), adminStudentRestore],
   ['POST', new RegExp(`^/api/admin/registrations/${ID}/students/${SID}/paid$`), adminStudentPaid],
+  ['POST', new RegExp(`^/api/admin/registrations/${ID}/students/${SID}/refund$`), adminStudentRefund],
   ['GET', /^\/api\/admin\/settings$/, adminGetSettings],
   ['POST', /^\/api\/admin\/settings$/, adminSetSettings],
+  ['GET', /^\/api\/admin\/class-teachers$/, adminListClassTeachers],
+  ['POST', /^\/api\/admin\/class-teachers\/batch$/, adminBatchClassTeachers],
+  ['POST', /^\/api\/admin\/class-teachers\/remove$/, adminRemoveClassTeacher],
+  ['GET', /^\/api\/my\/class-students$/, myClassStudents],
   ['GET', /^\/api\/admin\/allowed-emails$/, adminListAllowed],
   ['POST', /^\/api\/admin\/allowed-emails$/, adminAddAllowed],
   ['POST', /^\/api\/admin\/allowed-emails\/batch$/, adminBatchAllowed],
@@ -321,6 +327,40 @@ async function adminStudentPaid({ request, env, params }) {
   if (typeof paid !== 'boolean') throw new HttpError(400, 'paid 必須為 true 或 false');
   await setStudentPaid(requireDb(env), admin, params[0], params[1], paid);
   return json({ ok: true });
+}
+
+async function adminStudentRefund({ request, env, params }) {
+  const admin = await requireAdmin(request, env);
+  const { refunded } = await readJson(request);
+  if (typeof refunded !== 'boolean') throw new HttpError(400, 'refunded 必須為 true 或 false');
+  await setStudentRefunded(requireDb(env), admin, params[0], params[1], refunded);
+  return json({ ok: true });
+}
+
+async function adminListClassTeachers({ request, env }) {
+  await requireAdmin(request, env);
+  return json({ teachers: await listClassTeachers(requireDb(env)) });
+}
+
+async function adminBatchClassTeachers({ request, env }) {
+  const admin = await requireAdmin(request, env);
+  const { entries } = await readJson(request);
+  return json({ result: await setClassTeachersBatch(requireDb(env), admin, entries) });
+}
+
+async function adminRemoveClassTeacher({ request, env }) {
+  const admin = await requireAdmin(request, env);
+  const { class_code } = await readJson(request);
+  await removeClassTeacher(requireDb(env), admin, class_code);
+  return json({ ok: true });
+}
+
+// 導師查看本班學生（依班級導師名單）
+async function myClassStudents({ request, env }) {
+  const user = await requireUser(request, env);
+  const db = requireDb(env);
+  const classes = await myClasses(db, user.email);
+  return json({ classes, registrations: await listClassStudents(db, classes) });
 }
 
 async function adminGetSettings({ request, env }) {

@@ -413,3 +413,61 @@ test('manual backfill after survey lottery: next by draw rank, one per click, re
   await call(`/api/registrations/${sel[1].registration_id}/students/${sel[1].id}/withdraw`, { body: {}, as: ADMIN });
   assert.match((await call(path, { body: {}, as: ADMIN })).data.error, /沒有可遞補的候選者/);
 });
+
+test('refund: only paid students who withdrew / were not selected / cancelled; paid cannot be unset while refunded', async () => {
+  const { call, DB } = setup();
+  const id = await openSurvey(call, { min_participants: 0 });
+  await call('/api/registrations', { body: reg(id, '701'), as: T1 });
+  const r = (await call('/api/my/registrations', { as: T1 })).data.registrations[0];
+  const [a, b] = r.students;
+  const P = (sid, path, body) => call(`/api/admin/registrations/${r.id}/students/${sid}/${path}`, { body, as: ADMIN });
+  assert.equal((await P(a.id, 'refund', { refunded: true })).status, 409, 'not paid');
+  assert.equal((await P(a.id, 'paid', { paid: true })).status, 200);
+  assert.equal((await P(a.id, 'refund', { refunded: true })).status, 409, 'still participating');
+  assert.equal((await P(a.id, 'refund', { refunded: true }).then(() => call(`/api/registrations/${r.id}/students/${a.id}/withdraw`, { body: {}, as: T1 }))).status, 200);
+  let csv = (await call(`/api/admin/activities/${id}/registrations.csv`, { as: ADMIN })).data;
+  assert.match(csv, /已繳（待退費）/);
+  assert.equal((await call(`/api/admin/registrations/${r.id}/students/${a.id}/refund`, { body: { refunded: true }, as: T1 })).status, 403);
+  assert.equal((await P(a.id, 'refund', { refunded: true })).status, 200);
+  assert.match((await P(a.id, 'paid', { paid: false })).data.error, /退費/);
+  csv = (await call(`/api/admin/activities/${id}/registrations.csv`, { as: ADMIN })).data;
+  assert.match(csv, /,已退費,/);
+  // 整班取消 → 已繳者可登記退費
+  await P(b.id, 'paid', { paid: true });
+  await call(`/api/admin/activities/${id}/registrations/${r.id}/cancel`, { body: { reason: 'x' }, as: ADMIN });
+  assert.equal((await P(b.id, 'refund', { refunded: true })).status, 200);
+  const actions = DB.raw.prepare(`SELECT action FROM audit_logs WHERE action LIKE 'student_refund%' ORDER BY id`).all().map(x => x.action);
+  assert.deepEqual(actions, ['student_refunded', 'student_refunded']);
+});
+
+test('class teachers: admin batch, registration limited to the class teacher, teacher sees own class students', async () => {
+  const { call, DB } = setup();
+  const T3 = 't3@st.tc.edu.tw';
+  assert.equal((await call('/api/admin/class-teachers/batch', { body: { entries: [{ class_code: '701', teacher_name: '王', teacher_email: 'T1@st.tc.edu.tw' }] }, as: T1 })).status, 403);
+  const bad = await call('/api/admin/class-teachers/batch', { body: { entries: [{ class_code: '701', teacher_name: '王', teacher_email: T1 }, { class_code: '7x', teacher_name: '李', teacher_email: T2 }] }, as: ADMIN });
+  assert.match(bad.data.error, /第 2 筆/);
+  assert.equal((await call('/api/admin/class-teachers', { as: ADMIN })).data.teachers.length, 0, 'all-or-nothing');
+  assert.equal((await call('/api/admin/class-teachers/batch', { body: { entries: [{ class_code: '701', teacher_name: '王', teacher_email: 'T1@st.tc.edu.tw' }, { class_code: '702', teacher_name: '李', teacher_email: T2 }] }, as: ADMIN })).data.result.saved, 2);
+  // 改派 702 給 T3（更新）
+  await call('/api/admin/class-teachers/batch', { body: { entries: [{ class_code: '702', teacher_name: '陳', teacher_email: T3 }] }, as: ADMIN });
+  const list = (await call('/api/admin/class-teachers', { as: ADMIN })).data.teachers;
+  assert.deepEqual(list.map(t => [t.class_code, t.teacher_email]), [['701', T1], ['702', T3]]);
+  // 導師填寫：只有該班導師能報名
+  const id = await openSurvey(call, { min_participants: 0 });
+  assert.match((await call('/api/registrations', { body: reg(id, '701'), as: T2 })).data.error, /導師登記為 王/);
+  assert.equal((await call('/api/registrations', { body: reg(id, '701'), as: T1 })).status, 201);
+  assert.equal((await call('/api/registrations', { body: reg(id, '703'), as: T2 })).status, 201, 'unlisted class is open to anyone');
+  // 學生填寫（免登入）：不受限，且導師看得到本班學生
+  const sid = await openSurvey(call, { min_participants: 0, fill_mode: 'open', max_students_per_class: 30, title: '烘焙營' });
+  const pr = await call('/api/public/registrations', { body: pub(sid, { class_code: '702', seat_no: 9, name: '小明' }) });
+  assert.equal(pr.status, 201, JSON.stringify(pr.data));
+  const mine = (await call('/api/my/class-students', { as: T3 })).data;
+  assert.deepEqual(mine.classes, ['702']);
+  assert.deepEqual(mine.registrations.map(r => [r.title, r.class_code, r.students[0].name]), [['烘焙營', '702', '小明']]);
+  const none = (await call('/api/my/class-students', { as: T2 })).data;
+  assert.deepEqual([none.classes, none.registrations], [[], []]);
+  await call('/api/admin/class-teachers/remove', { body: { class_code: '702' }, as: ADMIN });
+  assert.deepEqual((await call('/api/my/class-students', { as: T3 })).data.classes, []);
+  const acts = DB.raw.prepare(`SELECT action FROM audit_logs WHERE action LIKE 'class_teacher%' ORDER BY id`).all().map(x => x.action);
+  assert.deepEqual(acts, ['class_teacher_set', 'class_teacher_set', 'class_teacher_set', 'class_teacher_remove']);
+});

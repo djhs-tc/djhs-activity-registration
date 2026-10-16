@@ -206,6 +206,37 @@ export async function openCancel(db, body, now = nowIso()) {
   if (!res.meta.changes) throw new HttpError(409, '取消失敗：找不到符合的報名（請確認 Email、班級、座號），或報名已截止');
 }
 
+// 免登入報名的結果查詢：Email、班級、座號三項都符合才回傳，只回傳本人的狀態（姓名遮罩），不含其他人的資料。
+export async function openLookup(db, body) {
+  const email = String(body.email || '').trim().toLowerCase();
+  const classCode = String(body.class_code || '').trim();
+  const seat = Number(body.seat_no);
+  if (!email || !CLASS_CODE.test(classCode) || !Number.isInteger(seat)) throw new HttpError(400, '請輸入報名時的 Email、班級與座號');
+  const row = await db.prepare(
+    `SELECT r.status AS reg_status, r.submitted_at, s.name, s.status, s.draw_result, s.backfilled_at, s.paid, s.refunded,
+            a.status AS activity_status, a.lottery_at, a.fee, a.cancelled_at, a.cancel_reason, a.overflow_mode, a.max_participants
+     FROM registrations r JOIN registration_students s ON s.registration_id = r.id JOIN activities a ON a.id = r.activity_id
+     WHERE r.activity_id = ?1 AND r.teacher_email = ?2 AND r.class_code = ?3 AND s.seat_no = ?4 AND r.verified = 0 AND a.status != 'draft'
+     ORDER BY (r.status = 'cancelled'), r.submitted_at DESC LIMIT 1`
+  ).bind(String(body.activity_id || ''), email, classCode, seat).first();
+  if (!row) throw new HttpError(404, '查無符合的報名，請確認 Email、班級與座號是否與報名時相同');
+  const lottery = row.overflow_mode === 'lottery' && Number(row.max_participants) > 0;
+  let result;
+  if (row.cancelled_at) result = 'activity_cancelled';
+  else if (row.reg_status === 'cancelled') result = 'cancelled';
+  else if (row.status === 'withdrawn') result = 'withdrawn';
+  else if (lottery && !row.lottery_at) result = 'waiting_draw';
+  else if (lottery && row.draw_result === 'selected') result = row.backfilled_at ? 'selected_backfill' : 'selected';
+  else if (lottery && row.draw_result === 'not_selected') result = 'not_selected';
+  else result = 'registered';
+  const name = [...String(row.name || '')];
+  const masked = name.length <= 1 ? name.join('') : name.length === 2 ? name[0] + '○' : name[0] + '○'.repeat(name.length - 2) + name[name.length - 1];
+  return {
+    result, name: masked, submitted_at: row.submitted_at, cancel_reason: row.cancelled_at ? row.cancel_reason : '',
+    fee: Number(row.fee) || 0, paid: Boolean(row.paid), refunded: Boolean(row.refunded)
+  };
+}
+
 // 學生填寫的報名：本人在報名截止前可自行取消（取消後可重新報名）；截止後請洽承辦人。
 export async function selfCancelRegistration(db, user, registrationId, now = nowIso()) {
   const [res] = await db.batch([

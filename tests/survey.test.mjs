@@ -439,3 +439,27 @@ test('refund: only paid students who withdrew / were not selected / cancelled; p
   const actions = DB.raw.prepare(`SELECT action FROM audit_logs WHERE action LIKE 'student_refund%' ORDER BY id`).all().map(x => x.action);
   assert.deepEqual(actions, ['student_refunded', 'student_refunded']);
 });
+
+test('open lookup: needs email + class + seat, returns only own masked result through draw and backfill', async () => {
+  const { call, DB } = setup();
+  const id = await openSurvey(call, { fill_mode: 'open', max_students_per_class: 30, min_participants: 0, max_participants: 1, overflow_mode: 'lottery' });
+  assert.equal((await call('/api/public/registrations', { body: pub(id) })).status, 201);
+  assert.equal((await call('/api/public/registrations', { body: pub(id, { email: 'b@gmail.com', seat_no: 4, name: '李四' }) })).status, 201);
+  const look = over => call('/api/public/registrations/lookup', { body: { activity_id: id, email: 'kid@gmail.com', class_code: '701', seat_no: 3, ...over } });
+  assert.equal((await look({ seat_no: 4 })).status, 404, 'seat must match the email');
+  assert.equal((await look({ email: 'b@gmail.com' })).status, 404);
+  assert.equal((await look({ email: '' })).status, 400);
+  const before = (await look()).data.result;
+  assert.deepEqual([before.result, before.name], ['waiting_draw', '王○明']);
+  assert.equal(JSON.stringify(before).includes('kid@'), false);
+  DB.raw.prepare(`UPDATE activities SET deadline_at = '2020-01-01T00:00:00.000Z' WHERE id = ?`).run(id);
+  await call(`/api/admin/activities/${id}/draw`, { body: {}, as: ADMIN });
+  const a = (await look()).data.result.result, b = (await look({ email: 'B@gmail.com', seat_no: 4 })).data.result.result;
+  assert.deepEqual([a, b].sort(), ['not_selected', 'selected']);
+  // 錄取者不參加 → 遞補後另一位顯示「錄取（遞補）」
+  const win = DB.raw.prepare(`SELECT s.id, s.registration_id FROM registration_students s WHERE draw_result = 'selected'`).get();
+  await call(`/api/registrations/${win.registration_id}/students/${win.id}/withdraw`, { body: {}, as: ADMIN });
+  await call(`/api/admin/activities/${id}/backfill`, { body: {}, as: ADMIN });
+  const after = [(await look()).data.result.result, (await look({ email: 'b@gmail.com', seat_no: 4 })).data.result.result].sort();
+  assert.deepEqual(after, ['selected_backfill', 'withdrawn']);
+});

@@ -9,7 +9,7 @@ import {
   listPublicActivities, validateRegistration, register, listMyRegistrations,
   validateActivity, createActivity, updateActivity, setActivityStatus, getActivity, listAdminActivities,
   listRegistrations, cancelRegistration, drawLottery, toCsv, toStudentsCsv, toIcs, cancelActivity, deleteActivity, backfillNext,
-  withdrawStudent, restoreStudent, setStudentPaid, setStudentRefunded, selfCancelRegistration, openRegister, openCancel
+  withdrawStudent, restoreStudent, setStudentPaid, setStudentRefunded, selfCancelRegistration, openRegister, openCancel, openLookup
 } from './activities.js';
 
 export default {
@@ -52,6 +52,7 @@ const ROUTES = [
   // 免登入（僅限設定為「學生填寫・免登入」的營隊）
   ['POST', /^\/api\/public\/registrations$/, publicRegistration],
   ['POST', /^\/api\/public\/registrations\/cancel$/, publicCancel],
+  ['POST', /^\/api\/public\/registrations\/lookup$/, publicLookup],
   ['GET', /^\/api\/my\/registrations$/, myRegistrations],
   ['POST', new RegExp(`^/api/registrations/${ID}/students/${SID}/withdraw$`), studentWithdraw],
   ['POST', new RegExp(`^/api/registrations/${ID}/cancel$`), selfCancel],
@@ -181,6 +182,11 @@ async function createRegistration({ request, env }) {
 
 async function publicRegistration({ request, env }) {
   return json(await openRegister(requireDb(env), await readJson(request)), 201);
+}
+
+// 用 POST 查詢，避免 Email 出現在網址或伺服器紀錄中
+async function publicLookup({ request, env }) {
+  return json({ result: await openLookup(requireDb(env), await readJson(request)) });
 }
 
 async function publicCancel({ request, env }) {

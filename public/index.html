@@ -28,7 +28,10 @@ function timeRange(a){const s=fmt(a.starts_at),e=fmt(a.ends_at);return s.slice(0
 // 名額摘要：講座顯示已報名／剩餘優先名額與進度條；意願調查顯示班數與男女人數
 function quotaSummary(a){const n=Number(a.registered_count);if(a.kind==='survey')return'<div class="quota"><b>已登記 '+n+' 班，共 '+Number(a.student_count)+' 人</b>（男 '+Number(a.male_count)+'、女 '+Number(a.female_count)+'）<span class="muted">｜每班最多 '+Number(a.max_students_per_class)+' 人</span></div>';
 const q=Number(a.priority_quota),lq=Number(a.lottery_quota),pr=Math.min(n,q),pool=Math.max(0,n-q),left=Math.max(0,q-n),pct=q?Math.round(pr/q*100):100;
-const text=left>0?'已報名 <b>'+n+'</b> 班｜優先名額剩 <b class="left">'+left+'</b> 班（共 '+q+' 班）':'優先名額 '+q+' 班<b class="full">已額滿</b>｜抽籤候選 <b>'+pool+'</b> 班，截止後抽出 '+lq+' 班';
+const ended=a.status==='drawn'||a.status==='closed'||serverNow>=a.deadline_at;
+const text=a.status==='drawn'?'已報名 <b>'+n+'</b> 班｜優先錄取 '+pr+' 班'+(pool?'、抽籤錄取 '+Math.min(pool,lq)+' 班':'')+'｜<b>抽籤已完成</b>，結果請至「我的報名」查看'
+:ended?'已報名 <b>'+n+'</b> 班｜優先錄取 '+pr+' 班'+(pool?'｜抽籤候選 <b>'+pool+'</b> 班，等待抽出 '+lq+' 班':'')
+:left>0?'已報名 <b>'+n+'</b> 班｜優先名額剩 <b class="left">'+left+'</b> 班（共 '+q+' 班）':'優先名額 '+q+' 班<b class="full">已額滿</b>｜抽籤候選 <b>'+pool+'</b> 班，截止後抽出 '+lq+' 班';
 return'<div class="quota">'+text+'<div class="bar" title="優先名額 '+pr+'/'+q+'"><i style="width:'+pct+'%"></i></div></div>';}
 let eventFilter='all';const openCards=new Set();
 function setFilter(k){eventFilter=k;renderEvents();}

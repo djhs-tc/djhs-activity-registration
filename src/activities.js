@@ -81,12 +81,6 @@ export async function register(db, user, input, now = nowIso(), opts = {}) {
   // 學生填寫時，填寫人姓名即學生姓名
   if (studentFill) input = { ...input, teacherName: input.students[0].name, accompany: 'no' };
   const submitter = studentFill ? 'student' : 'teacher';
-  if (!studentFill && !user.isAdmin) {
-    const ct = await db.prepare('SELECT teacher_name, teacher_email FROM class_teachers WHERE class_code = ?1').bind(input.classCode).first();
-    if (ct && ct.teacher_email !== String(user.email || '').toLowerCase()) {
-      throw new HttpError(403, `${input.classCode} 班的導師登記為 ${ct.teacher_name}，只有該班導師可以報名；如有異動請洽教學組`);
-    }
-  }
   const seat = studentFill ? input.students[0].seat_no : 0;
   const id = crypto.randomUUID();
   let results;

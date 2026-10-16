@@ -100,7 +100,7 @@ CREATE TABLE IF NOT EXISTS allowed_emails (
  added_by TEXT NOT NULL,
  added_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
--- 班級導師名單（個資：僅管理員可見）。有登記的班級，導師填寫的活動只有該班導師能報名；導師可在「我的報名」查看本班學生。
+-- 班級導師名單（個資：僅管理員可見）。導師可在「我的報名」查看本班學生（不限制報名）。
 CREATE TABLE IF NOT EXISTS class_teachers (
  class_code TEXT PRIMARY KEY,
  teacher_name TEXT NOT NULL,

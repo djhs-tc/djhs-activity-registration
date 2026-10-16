@@ -440,7 +440,7 @@ test('refund: only paid students who withdrew / were not selected / cancelled; p
   assert.deepEqual(actions, ['student_refunded', 'student_refunded']);
 });
 
-test('class teachers: admin batch, registration limited to the class teacher, teacher sees own class students', async () => {
+test('class teachers: admin batch, registration not restricted, teacher sees own class students', async () => {
   const { call, DB } = setup();
   const T3 = 't3@st.tc.edu.tw';
   assert.equal((await call('/api/admin/class-teachers/batch', { body: { entries: [{ class_code: '701', teacher_name: '王', teacher_email: 'T1@st.tc.edu.tw' }] }, as: T1 })).status, 403);
@@ -454,9 +454,8 @@ test('class teachers: admin batch, registration limited to the class teacher, te
   assert.deepEqual(list.map(t => [t.class_code, t.teacher_email]), [['701', T1], ['702', T3]]);
   // 導師填寫：只有該班導師能報名
   const id = await openSurvey(call, { min_participants: 0 });
-  assert.match((await call('/api/registrations', { body: reg(id, '701'), as: T2 })).data.error, /導師登記為 王/);
-  assert.equal((await call('/api/registrations', { body: reg(id, '701'), as: T1 })).status, 201);
-  assert.equal((await call('/api/registrations', { body: reg(id, '703'), as: T2 })).status, 201, 'unlisted class is open to anyone');
+  // 名單不限制報名：非該班導師也能替該班報名
+  assert.equal((await call('/api/registrations', { body: reg(id, '701'), as: T2 })).status, 201);
   // 學生填寫（免登入）：不受限，且導師看得到本班學生
   const sid = await openSurvey(call, { min_participants: 0, fill_mode: 'open', max_students_per_class: 30, title: '烘焙營' });
   const pr = await call('/api/public/registrations', { body: pub(sid, { class_code: '702', seat_no: 9, name: '小明' }) });

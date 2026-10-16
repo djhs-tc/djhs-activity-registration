@@ -53,6 +53,13 @@ CREATE TABLE IF NOT EXISTS registration_students (
  UNIQUE(registration_id, seat_no)
 );
 CREATE INDEX IF NOT EXISTS idx_students_registration ON registration_students(registration_id);
+-- 個別允許登入的非學校信箱（學校網域帳號不需加入）
+CREATE TABLE IF NOT EXISTS allowed_emails (
+ email TEXT PRIMARY KEY,
+ note TEXT NOT NULL DEFAULT '',
+ added_by TEXT NOT NULL,
+ added_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
 CREATE TABLE IF NOT EXISTS audit_logs (
  id INTEGER PRIMARY KEY AUTOINCREMENT,
  actor_email TEXT NOT NULL,

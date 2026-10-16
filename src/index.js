@@ -1,7 +1,8 @@
 import {
-  AuthError, authConfig, verifyGoogleIdToken, signSession, readSession, randomToken,
+  AuthError, authConfig, verifyGoogleIdToken, signSession, readSession, randomToken, isSchoolEmail,
   getCookie, setCookie, SESSION_COOKIE, NONCE_COOKIE, SESSION_TTL_S, NONCE_TTL_S
 } from './auth.js';
+import { isAllowedEmail, listAllowedEmails, addAllowedEmail, removeAllowedEmail } from './allowlist.js';
 import { HttpError, json, readJson, nowIso } from './http.js';
 import {
   listPublicActivities, validateRegistration, register, listMyRegistrations,
@@ -59,7 +60,10 @@ const ROUTES = [
   ['POST', new RegExp(`^/api/admin/activities/${ID}/registrations/${ID}/cancel$`), adminCancelRegistration],
   ['POST', new RegExp(`^/api/admin/activities/${ID}/draw$`), adminDraw],
   ['POST', new RegExp(`^/api/admin/registrations/${ID}/students/${SID}/restore$`), adminStudentRestore],
-  ['POST', new RegExp(`^/api/admin/registrations/${ID}/students/${SID}/paid$`), adminStudentPaid]
+  ['POST', new RegExp(`^/api/admin/registrations/${ID}/students/${SID}/paid$`), adminStudentPaid],
+  ['GET', /^\/api\/admin\/allowed-emails$/, adminListAllowed],
+  ['POST', /^\/api\/admin\/allowed-emails$/, adminAddAllowed],
+  ['POST', /^\/api\/admin\/allowed-emails\/remove$/, adminRemoveAllowed]
 ];
 
 // ---------- 身分 ----------
@@ -67,7 +71,10 @@ async function currentUser(request, env) {
   const cfg = authConfig(env);
   if (!cfg.enabled) return null;
   const s = await readSession(getCookie(request, SESSION_COOKIE), cfg.secret);
-  return s && { email: s.email, name: s.name, isAdmin: cfg.admins.includes(s.email) };
+  if (!s) return null;
+  // 非學校帳號每次都重新檢查名單：管理員移除後立即失效，不必等 session 過期。
+  if (!isSchoolEmail(s.email, cfg.domains) && !(await isAllowedEmail(env.DB, s.email))) return null;
+  return { email: s.email, name: s.name, isAdmin: cfg.admins.includes(s.email) };
 }
 async function requireUser(request, env) {
   const user = await currentUser(request, env);
@@ -121,11 +128,14 @@ async function googleLogin({ request, env, ctx }) {
   if (typeof body.credential !== 'string') throw new HttpError(400, 'Invalid request');
   let user;
   try {
-    user = await verifyGoogleIdToken(body.credential, { clientId: cfg.clientId, domains: cfg.domains, nonce: getCookie(request, NONCE_COOKIE) });
+    user = await verifyGoogleIdToken(body.credential, {
+      clientId: cfg.clientId, domains: cfg.domains, nonce: getCookie(request, NONCE_COOKIE),
+      isExtraAllowed: email => isAllowedEmail(env.DB, email)
+    });
   } catch (e) {
     if (e instanceof AuthError) {
-      const message = e.message === 'account domain not allowed'
-        ? '僅限臺中市教育帳號（' + cfg.domains.map(d => '@' + d).join('、') + '）登入'
+      const message = e.message === 'account not allowed'
+        ? '此帳號尚未登記。請使用學校帳號（' + cfg.domains.map(d => '@' + d).join('、') + '），或請教學組將您的信箱加入名單'
         : '登入驗證失敗，請重新登入';
       return json({ error: message }, 401, { 'set-cookie': setCookie(NONCE_COOKIE, '', 0) });
     }
@@ -244,6 +254,25 @@ async function adminStudentPaid({ request, env, params }) {
   const { paid } = await readJson(request);
   if (typeof paid !== 'boolean') throw new HttpError(400, 'paid 必須為 true 或 false');
   await setStudentPaid(requireDb(env), admin, params[0], params[1], paid);
+  return json({ ok: true });
+}
+
+async function adminListAllowed({ request, env }) {
+  await requireAdmin(request, env);
+  return json({ emails: await listAllowedEmails(requireDb(env)), schoolDomains: authConfig(env).domains });
+}
+
+async function adminAddAllowed({ request, env }) {
+  const admin = await requireAdmin(request, env);
+  const { email, note } = await readJson(request);
+  await addAllowedEmail(requireDb(env), admin, email, note, authConfig(env).domains);
+  return json({ ok: true }, 201);
+}
+
+async function adminRemoveAllowed({ request, env }) {
+  const admin = await requireAdmin(request, env);
+  const { email } = await readJson(request);
+  await removeAllowedEmail(requireDb(env), admin, email);
   return json({ ok: true });
 }
 

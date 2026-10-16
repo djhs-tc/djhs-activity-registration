@@ -52,6 +52,8 @@ GitHub main 推送 ──► Cloudflare Workers Builds（deploy command: npx wra
 | POST | `/api/registrations/:rid/students/:sid/withdraw` | 導師（自己的報名、截止前）／管理員 | 意願調查：標記學生不參加 |
 | POST | `/api/admin/registrations/:rid/students/:sid/restore` | 管理員 | 恢復學生為參加 |
 | POST | `/api/admin/registrations/:rid/students/:sid/paid` | 管理員 | 登記繳費 `{paid: true/false}` |
+| GET / POST | `/api/admin/allowed-emails` | 管理員 | 帳號名單：列出／加入個人信箱 `{email, note}` |
+| POST | `/api/admin/allowed-emails/remove` | 管理員 | 從帳號名單移除 `{email}`（立即失效） |
 
 所有 POST／PUT 必須同源（`Origin` 檢查）且為 `application/json`，否則回 403／415。所有時間以 UTC ISO 字串儲存，畫面與輸入一律為臺灣時間（UTC+8）。
 
@@ -65,7 +67,7 @@ GitHub main 推送 ──► Cloudflare Workers Builds（deploy command: npx wra
   - **修改名額**：依同一規則重新計算；調低名額時，較晚報名的優先錄取班級會改為抽籤候選（畫面會先確認）。
   - 每次狀態異動都寫入 `priority_recompute` 稽核紀錄（班級、原狀態、新狀態）。
   - 抽籤後取消不會重新計算，名額異動由管理員人工處理。
-- 稽核紀錄 `audit_logs`：`login`、`activity_create`、`activity_update`（含修改前後）、`activity_status`、`register`、`registration_cancel`、`priority_recompute`、`lottery_draw`、`student_withdraw`、`student_restore`、`student_paid`、`student_unpaid`。
+- 稽核紀錄 `audit_logs`：`login`、`activity_create`、`activity_update`（含修改前後）、`activity_status`、`register`、`registration_cancel`、`priority_recompute`、`lottery_draw`、`student_withdraw`、`student_restore`、`student_paid`、`student_unpaid`、`allowlist_add`、`allowlist_remove`。
 
 ### 營隊意願調查（`kind = survey`）
 - 建立活動時選擇類型，**建立後不可變更**。沒有名額與抽籤，班級報名狀態為「已登記」；每班人數上限由管理員設定（1–60，抽籤前可修改）。
@@ -79,7 +81,9 @@ GitHub main 推送 ──► Cloudflare Workers Builds（deploy command: npx wra
 
 ## Google 登入設定
 
-登入只接受 Google Workspace 管理的學校帳號：ID token 的 `hd` 必須是 `ALLOWED_EMAIL_DOMAINS` 之一（`wrangler.jsonc`，預設 `st.tc.edu.tw,tjjh.tc.edu.tw`），個人 Gmail 一律拒絕。
+登入接受兩種帳號：
+1. **學校帳號**：Google Workspace 管理的帳號，ID token 的 `hd` 必須是 `ALLOWED_EMAIL_DOMAINS` 之一（`wrangler.jsonc`，預設 `st.tc.edu.tw,tjjh.tc.edu.tw`）。
+2. **帳號名單上的個人信箱**：管理後台「帳號名單」加入的信箱（例如導師慣用的 Gmail，必須是 Google 帳號）。非學校帳號每次請求都重新檢查名單，移除後立即失效（即使 session cookie 仍有效）。不在名單上的個人帳號一律拒絕。
 
 目前設定（2026-10-15 完成）：
 - Google Cloud 專案 `djhs-activity-registration` → Google Auth Platform：使用者類型「外部」、網頁應用程式用戶端、已授權 JavaScript 來源 `https://activity.djhs.workers.dev`、授權網域 `djhs.workers.dev`、隱私權政策 `/privacy`。用戶端密鑰不使用，也不要提交到儲存庫。
@@ -120,7 +124,7 @@ npx wrangler dev --local
 
 ## 上線前測試清單
 
-- [x] `npm test` 全部通過（43 項，含營隊意願調查）
+- [x] `npm test` 全部通過（48 項，含營隊意願調查、帳號名單）
 - [x] 本機 `wrangler dev` 端到端：草稿不可報名、優先名額、重複報名、取消、截止前不可抽籤、截止後不可報名、同時抽籤僅一次成功、稽核紀錄筆數正確
 - [x] `@st.tc.edu.tw`、`@tjjh.tc.edu.tw` 帳號可登入；個人 Gmail 被拒絕；`audit_logs` 有 login 紀錄
 - [ ] `scripts/verify-live.sh` 全部 PASS（每次部署後）

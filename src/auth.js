@@ -62,7 +62,8 @@ async function getGoogleKeys(fetchImpl, forceRefresh) {
 }
 
 // 回傳驗證通過的使用者 { email, name, hd, sub }；任何不符即丟出 AuthError。
-export async function verifyGoogleIdToken(token, { clientId, domains, nonce, fetchImpl = fetch, nowS = Math.floor(Date.now() / 1000) }) {
+// isExtraAllowed(email)：非學校網域時，查詢管理員維護的個別允許名單（例如導師慣用的 Gmail）。
+export async function verifyGoogleIdToken(token, { clientId, domains, nonce, isExtraAllowed = async () => false, fetchImpl = fetch, nowS = Math.floor(Date.now() / 1000) }) {
   if (typeof token !== 'string' || token.length > 4096) throw new AuthError('invalid token');
   const parts = token.split('.');
   if (parts.length !== 3) throw new AuthError('invalid token');
@@ -92,9 +93,19 @@ export async function verifyGoogleIdToken(token, { clientId, domains, nonce, fet
 
   const email = String(payload.email || '').toLowerCase();
   const hd = String(payload.hd || '').toLowerCase();
-  // 只接受學校 Google Workspace 管理的帳號：hd 必須在允許清單，且 email 屬於該網域。
-  if (!hd || !domains.includes(hd) || !email.endsWith('@' + hd)) throw new AuthError('account domain not allowed');
+  // 學校 Google Workspace 帳號：hd 必須在允許清單，且 email 屬於該網域。
+  // 其他帳號（Gmail 等）：必須已由管理員加入個別允許名單。
+  if (!isSchoolAccount(email, hd, domains) && !(await isExtraAllowed(email))) throw new AuthError('account not allowed');
   return { email, name: String(payload.name || ''), hd, sub: String(payload.sub || '') };
+}
+
+export function isSchoolAccount(email, hd, domains) {
+  return Boolean(hd) && domains.includes(hd) && email.endsWith('@' + hd);
+}
+// session 中沒有 hd，以 email 網域判斷（學校網域的 email 只可能來自已驗證 hd 的登入）
+export function isSchoolEmail(email, domains) {
+  const at = email.lastIndexOf('@');
+  return at > 0 && domains.includes(email.slice(at + 1));
 }
 
 // --- session cookie（HMAC-SHA256 簽章，無狀態）---

@@ -57,9 +57,6 @@ GitHub main 推送 ──► Cloudflare Workers Builds（deploy command: npx wra
 | POST | `/api/admin/registrations/:rid/students/:sid/restore` | 管理員 | 恢復學生為參加 |
 | POST | `/api/admin/registrations/:rid/students/:sid/paid` | 管理員 | 登記繳費 `{paid: true/false}`（已退費者不能改回未繳） |
 | POST | `/api/admin/registrations/:rid/students/:sid/refund` | 管理員 | 登記退費 `{refunded: true/false}`（限已繳且不參加／未錄取／已取消者） |
-| GET | `/api/admin/class-teachers` | 管理員 | 班級導師名單 |
-| POST | `/api/admin/class-teachers/batch` | 管理員 | 批次設定 `{entries:[{class_code, teacher_name, teacher_email}]}`（整批檢查，同班改派） |
-| POST | `/api/admin/class-teachers/remove` | 管理員 | 移除 `{class_code}` |
 | GET / POST | `/api/admin/settings` | 管理員 | 讀取／設定登入政策 `{login_policy}`，值為 `school_only` 或 `any_google` |
 | GET / POST | `/api/admin/allowed-emails` | 管理員 | 帳號名單：列出／加入個人信箱 `{email, note}` |
 | POST | `/api/admin/allowed-emails/batch` | 管理員 | 批次加入 `{entries: [{email, note}]}`，最多 300 筆；任一筆有誤整批不加入，已存在者略過 |
@@ -78,7 +75,7 @@ GitHub main 推送 ──► Cloudflare Workers Builds（deploy command: npx wra
   - 每次狀態異動都寫入 `priority_recompute` 稽核紀錄（班級、原狀態、新狀態）。
   - 抽籤後取消不會重新計算。
 - **抽籤後手動遞補**：錄取者不參加時，管理員先取消該班（講座）或將學生標記不參加（營隊），「抽籤作業」會顯示空缺數與依抽籤序的下一位，按「遞補下一位」並確認後錄取。空缺＝講座「優先＋抽籤名額 − 優先錄取與抽籤錄取班數」、營隊「人數上限 − 錄取且參加的學生數」。空缺檢查與更新在同一個 SQL 敘述內，同時按兩次也只會遞補一位。遞補者在名單、「我的報名」與 CSV 標示「錄取（遞補）」，稽核紀錄 `lottery_backfill`。名額已被遞補後，原錄取學生不能再「恢復參加」（避免超過上限）。
-- 稽核紀錄 `audit_logs`：`login`、`activity_create`、`activity_update`（含修改前後）、`activity_status`、`register`、`registration_cancel`、`priority_recompute`、`lottery_draw`、`lottery_backfill`、`student_withdraw`、`student_restore`、`student_paid`、`student_unpaid`、`student_refunded`、`student_unrefunded`、`class_teacher_set`、`class_teacher_remove`、`allowlist_add`、`allowlist_remove`。
+- 稽核紀錄 `audit_logs`：`login`、`activity_create`、`activity_update`（含修改前後）、`activity_status`、`register`、`registration_cancel`、`priority_recompute`、`lottery_draw`、`lottery_backfill`、`student_withdraw`、`student_restore`、`student_paid`、`student_unpaid`、`student_refunded`、`student_unrefunded`、`allowlist_add`、`allowlist_remove`。
 
 ### 取消與刪除活動
 - **取消活動**（臨時不辦）：需填原因（公開顯示）。開放中改為關閉並停止報名；所有報名資料保留，導師在「我的報名」看到「活動已取消：原因」。取消後不可編輯、重新開放或抽籤，可再封存。稽核紀錄 `activity_cancel` 記下原因與當時有效報名數。系統不會自動通知導師，請另行通知。
@@ -105,7 +102,6 @@ GitHub main 推送 ──► Cloudflare Workers Builds（deploy command: npx wra
   - **超過名額改抽籤**（必須同時設定人數上限）：截止前不限人數收件；截止後管理員在「抽籤作業」以**學生為單位**抽出上限人數（HMAC-SHA256(種子, "student:" + 學生 id) 排序，種子與名單寫入稽核紀錄，可重算驗證，只能抽一次）。未超過上限時全部錄取。抽籤結果顯示在「我的報名」、管理後台與 CSV，應收金額只計錄取者。
 - 管理後台「報名名單」顯示各年級 × 男女人數統計與已繳費人數，CSV 一位學生一列，供收費對帳。
 - **退費**：已繳費、但之後不參加、未錄取、整班取消或活動取消的學生列在「退費」區（待退費），退款後勾「已退費」。「已收」＝已繳未退費者；CSV 繳費欄顯示 已繳／已繳（待退費）／已退費／未繳。稽核紀錄 `student_refunded`／`student_unrefunded`。
-- **班級導師名單**（管理後台「班級導師」，可從 Excel 貼上 班級、姓名、信箱）：目前**僅保存備用**，不限制報名，也不顯示給導師（「我班學生」查看功能因多數導師信箱不是 Google 帳號而暫停，見 git 歷史 6ef82d5）。稽核紀錄 `class_teacher_set`／`class_teacher_remove`。
 - 個資：學生名單只有送出的導師本人與管理員可見；公開 API 只回傳班數與男女總數。
 
 ### D1 資料表
@@ -160,7 +156,7 @@ npx wrangler dev --local
 
 ## 上線前測試清單
 
-- [x] `npm test` 全部通過（75 項）
+- [x] `npm test` 全部通過（74 項）
 - [x] 本機 `wrangler dev` 端到端：草稿不可報名、優先名額、重複報名、取消、截止前不可抽籤、截止後不可報名、同時抽籤僅一次成功、稽核紀錄筆數正確
 - [x] `@st.tc.edu.tw`、`@tjjh.tc.edu.tw` 帳號可登入；個人 Gmail 被拒絕；`audit_logs` 有 login 紀錄
 - [ ] `scripts/verify-live.sh` 全部 PASS（每次部署後）

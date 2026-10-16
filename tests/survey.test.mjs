@@ -439,24 +439,3 @@ test('refund: only paid students who withdrew / were not selected / cancelled; p
   const actions = DB.raw.prepare(`SELECT action FROM audit_logs WHERE action LIKE 'student_refund%' ORDER BY id`).all().map(x => x.action);
   assert.deepEqual(actions, ['student_refunded', 'student_refunded']);
 });
-
-test('class teachers: admin batch, kept for later, no registration restriction, class view disabled', async () => {
-  const { call, DB } = setup();
-  const T3 = 't3@st.tc.edu.tw';
-  assert.equal((await call('/api/admin/class-teachers/batch', { body: { entries: [{ class_code: '701', teacher_name: '王', teacher_email: 'T1@st.tc.edu.tw' }] }, as: T1 })).status, 403);
-  const bad = await call('/api/admin/class-teachers/batch', { body: { entries: [{ class_code: '701', teacher_name: '王', teacher_email: T1 }, { class_code: '7x', teacher_name: '李', teacher_email: T2 }] }, as: ADMIN });
-  assert.match(bad.data.error, /第 2 筆/);
-  assert.equal((await call('/api/admin/class-teachers', { as: ADMIN })).data.teachers.length, 0, 'all-or-nothing');
-  assert.equal((await call('/api/admin/class-teachers/batch', { body: { entries: [{ class_code: '701', teacher_name: '王', teacher_email: 'T1@st.tc.edu.tw' }, { class_code: '702', teacher_name: '李', teacher_email: T2 }] }, as: ADMIN })).data.result.saved, 2);
-  // 改派 702 給 T3（更新）
-  await call('/api/admin/class-teachers/batch', { body: { entries: [{ class_code: '702', teacher_name: '陳', teacher_email: T3 }] }, as: ADMIN });
-  const list = (await call('/api/admin/class-teachers', { as: ADMIN })).data.teachers;
-  assert.deepEqual(list.map(t => [t.class_code, t.teacher_email]), [['701', T1], ['702', T3]]);
-  // 名單不限制報名；「我班學生」查看功能暫停，API 不存在
-  const id = await openSurvey(call, { min_participants: 0 });
-  assert.equal((await call('/api/registrations', { body: reg(id, '701'), as: T2 })).status, 201);
-  assert.equal((await call('/api/my/class-students', { as: T3 })).status, 404);
-  await call('/api/admin/class-teachers/remove', { body: { class_code: '702' }, as: ADMIN });
-  const acts = DB.raw.prepare(`SELECT action FROM audit_logs WHERE action LIKE 'class_teacher%' ORDER BY id`).all().map(x => x.action);
-  assert.deepEqual(acts, ['class_teacher_set', 'class_teacher_set', 'class_teacher_set', 'class_teacher_remove']);
-});

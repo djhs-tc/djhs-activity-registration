@@ -4,7 +4,6 @@ import {
 } from './auth.js';
 import { getLoginPolicy, setLoginPolicy, getSettings } from './settings.js';
 import { isAllowedEmail, listAllowedEmails, addAllowedEmail, addAllowedEmailsBatch, removeAllowedEmail } from './allowlist.js';
-import { listClassTeachers, setClassTeachersBatch, removeClassTeacher } from './classteachers.js';
 import { HttpError, json, readJson, nowIso } from './http.js';
 import {
   listPublicActivities, validateRegistration, register, listMyRegistrations,
@@ -74,9 +73,6 @@ const ROUTES = [
   ['POST', new RegExp(`^/api/admin/registrations/${ID}/students/${SID}/refund$`), adminStudentRefund],
   ['GET', /^\/api\/admin\/settings$/, adminGetSettings],
   ['POST', /^\/api\/admin\/settings$/, adminSetSettings],
-  ['GET', /^\/api\/admin\/class-teachers$/, adminListClassTeachers],
-  ['POST', /^\/api\/admin\/class-teachers\/batch$/, adminBatchClassTeachers],
-  ['POST', /^\/api\/admin\/class-teachers\/remove$/, adminRemoveClassTeacher],
   ['GET', /^\/api\/admin\/allowed-emails$/, adminListAllowed],
   ['POST', /^\/api\/admin\/allowed-emails$/, adminAddAllowed],
   ['POST', /^\/api\/admin\/allowed-emails\/batch$/, adminBatchAllowed],
@@ -333,24 +329,6 @@ async function adminStudentRefund({ request, env, params }) {
   const { refunded } = await readJson(request);
   if (typeof refunded !== 'boolean') throw new HttpError(400, 'refunded 必須為 true 或 false');
   await setStudentRefunded(requireDb(env), admin, params[0], params[1], refunded);
-  return json({ ok: true });
-}
-
-async function adminListClassTeachers({ request, env }) {
-  await requireAdmin(request, env);
-  return json({ teachers: await listClassTeachers(requireDb(env)) });
-}
-
-async function adminBatchClassTeachers({ request, env }) {
-  const admin = await requireAdmin(request, env);
-  const { entries } = await readJson(request);
-  return json({ result: await setClassTeachersBatch(requireDb(env), admin, entries) });
-}
-
-async function adminRemoveClassTeacher({ request, env }) {
-  const admin = await requireAdmin(request, env);
-  const { class_code } = await readJson(request);
-  await removeClassTeacher(requireDb(env), admin, class_code);
   return json({ ok: true });
 }
 

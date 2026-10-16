@@ -182,7 +182,7 @@ function manageTable(){return'<section class="card"><div class="row" style="just
 function manageTableBody(){const t=new Date().toISOString();const q=adminQuery.trim().toLowerCase();
 const rows=adminActs.filter(a=>!q||(a.title+' '+(a.organizer_name||'')).toLowerCase().includes(q));
 const val={title:a=>a.title,state:a=>adminState(a,t)[0],opens_at:a=>a.opens_at,deadline_at:a=>a.deadline_at,starts_at:a=>a.starts_at,count:a=>adminCount(a),organizer:a=>a.organizer_name||''};
-const k=val[adminSort.key]||val.starts_at;rows.sort((x,y)=>{const A=k(x),B=k(y);return(A<B?-1:A>B?1:0)*adminSort.dir;});
+const k=val[adminSort.key]||val.starts_at;rows.sort((x,y)=>{const A=k(x),B=k(y);return(typeof A==='string'&&adminSort.key!=='opens_at'&&adminSort.key!=='starts_at'?A.localeCompare(B,'zh-Hant-TW-u-co-stroke'):A<B?-1:A>B?1:0)*adminSort.dir;});
 const th=(key,label)=>'<th><button class="th-sort" onclick="setAdminSort(\''+key+'\')">'+label+(adminSort.key===key?(adminSort.dir>0?' ▲':' ▼'):'')+'</button></th>';
 const d=iso=>fmt(iso).slice(0,10);
 const body=rows.map(a=>{const [sl,sc]=adminState(a,t);const survey=a.kind==='survey';

@@ -37,7 +37,12 @@ CREATE TABLE IF NOT EXISTS activities (
  -- 學生填寫時是否需要登入：0 = 免登入自由報名（自填 Email，不驗證）
  login_required INTEGER NOT NULL DEFAULT 1 CHECK(login_required IN (0,1)),
  -- 自動抽籤時間（UTC）；NULL = 手動抽籤。由 Cron Trigger 每 5 分鐘檢查
- draw_at TEXT
+ draw_at TEXT,
+ -- 營隊開班：每班人數上限（0 = 不分班）、最多開幾班（0 = 不限；兩者皆有值時 max_participants = 相乘）
+ section_size INTEGER NOT NULL DEFAULT 0,
+ max_sections INTEGER NOT NULL DEFAULT 0,
+ -- 1 = 額滿改候補：超過 max_participants 仍收件，依報名先後排候補，有人取消或不參加時自動遞補（overflow_mode 維持 close）
+ waitlist INTEGER NOT NULL DEFAULT 0 CHECK(waitlist IN (0,1))
 );
 CREATE TABLE IF NOT EXISTS registrations (
  id TEXT PRIMARY KEY,

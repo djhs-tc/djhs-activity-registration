@@ -524,3 +524,40 @@ test('a seat marked 不參加 cannot be taken by another email', async () => {
   DB.raw.prepare(`UPDATE registrations SET status = 'cancelled'`).run();
   assert.equal((await call('/api/public/registrations', { body: pub(id, { email: 'x@gmail.com' }) })).status, 201);
 });
+
+// ---------- 營隊開班與候補 ----------
+test('sections: section size × max sections sets the cap; waitlist needs a cap', async () => {
+  const { validateActivity } = await import('../src/activities.js');
+  const a = validateActivity(surveyBody({ section_size: 30, max_sections: 2, overflow_mode: 'waitlist', min_participants: 20 }));
+  assert.deepEqual([a.max_participants, a.waitlist, a.overflow_mode], [60, 1, 'close']);
+  assert.throws(() => validateActivity(surveyBody({ section_size: 30, max_sections: 0, overflow_mode: 'waitlist', min_participants: 0 })), /額滿改候補/);
+  assert.equal(validateActivity(surveyBody({ section_size: 30, min_participants: 0 })).max_participants, 0, 'no max sections = no cap');
+});
+
+test('waitlist: over the cap is accepted as 候補 in order, auto-promoted when someone withdraws or cancels', async () => {
+  const { call, DB } = setup();
+  const id = await openSurvey(call, { fill_mode: 'open', max_students_per_class: 30, min_participants: 0, section_size: 2, max_sections: 1, overflow_mode: 'waitlist' });
+  for (let seat = 1; seat <= 4; seat++) {
+    const r = await call('/api/public/registrations', { body: pub(id, { email: `k${seat}@gmail.com`, seat_no: seat, name: '學生' + seat }) });
+    assert.equal(r.status, 201, JSON.stringify(r.data));
+  }
+  const look = seat => call('/api/public/registrations/lookup', { body: { activity_id: id, email: `k${seat}@gmail.com`, class_code: '701', seat_no: seat } }).then(r => r.data.result);
+  assert.deepEqual([(await look(1)).result, (await look(2)).result, (await look(3)).result, (await look(4)).result], ['registered', 'registered', 'waitlisted', 'waitlisted']);
+  assert.equal((await look(4)).waitlist_no, 2);
+  // 正取者標記不參加 → 候補第 1 位自動遞補
+  const s1 = DB.raw.prepare(`SELECT s.id, s.registration_id FROM registration_students s WHERE seat_no = 1`).get();
+  await call(`/api/registrations/${s1.registration_id}/students/${s1.id}/withdraw`, { body: {}, as: ADMIN });
+  assert.equal((await look(3)).result, 'registered');
+  assert.deepEqual([(await look(4)).result, (await look(4)).waitlist_no], ['waitlisted', 1]);
+  // 額滿時不能恢復參加（避免把已遞補的人擠回候補）
+  assert.match((await call(`/api/admin/registrations/${s1.registration_id}/students/${s1.id}/restore`, { body: {}, as: ADMIN })).data.error, /名額已滿/);
+  // 整筆取消也會遞補
+  assert.equal((await call('/api/public/registrations/cancel', { body: { activity_id: id, email: 'k2@gmail.com', class_code: '701', seat_no: 2 } })).status, 200);
+  assert.equal((await look(4)).result, 'registered');
+  // 名單與 CSV 標示
+  const list = (await call(`/api/admin/activities/${id}/registrations`, { as: ADMIN })).data.registrations;
+  assert.ok(list.flatMap(r => r.students).every(s => s.waitlist_no === 0));
+  const csv = (await call(`/api/admin/activities/${id}/registrations.csv`, { as: ADMIN })).data;
+  assert.match(csv, /正取／候補/);
+  assert.equal((csv.match(/,正取,/g) || []).length, 2);
+});

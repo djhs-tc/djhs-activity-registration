@@ -561,3 +561,13 @@ test('waitlist: over the cap is accepted as 候補 in order, auto-promoted when 
   assert.match(csv, /正取／候補/);
   assert.equal((csv.match(/,正取,/g) || []).length, 2);
 });
+
+test('frontend: a full waitlist camp stays open for registration and cancellation', async () => {
+  const { readFileSync } = await import('node:fs');
+  const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  const src = html.match(/<script>([\s\S]*?)<\/script>/)[1];
+  const isFull = new Function(src.match(/function isFull\(a\)\{[^}]*\}/)[0] + ';return isFull;')();
+  const base = { kind: 'survey', overflow_mode: 'close', max_participants: 30, student_count: 34 };
+  assert.equal(isFull({ ...base, waitlist: 0 }), true);
+  assert.equal(isFull({ ...base, waitlist: 1 }), false);
+});

@@ -159,7 +159,7 @@ npx wrangler dev --local
 
 ## 上線前測試清單
 
-- [x] `npm test` 全部通過（84 項）
+- [x] `npm test` 全部通過（85 項）
 - [x] 本機 `wrangler dev` 端到端：草稿不可報名、優先名額、重複報名、取消、截止前不可抽籤、截止後不可報名、同時抽籤僅一次成功、稽核紀錄筆數正確
 - [x] `@st.tc.edu.tw`、`@tjjh.tc.edu.tw` 帳號可登入；個人 Gmail 被拒絕；`audit_logs` 有 login 紀錄
 - [ ] `scripts/verify-live.sh` 全部 PASS（每次部署後）

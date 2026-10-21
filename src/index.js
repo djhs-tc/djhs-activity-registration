@@ -9,7 +9,7 @@ import {
   listPublicActivities, validateRegistration, register, listMyRegistrations,
   validateActivity, createActivity, updateActivity, setActivityStatus, getActivity, listAdminActivities,
   listRegistrations, cancelRegistration, drawLottery, toCsv, toStudentsCsv, toIcs, cancelActivity, deleteActivity, backfillNext,
-  withdrawStudent, restoreStudent, setStudentPaid, setStudentRefunded, selfCancelRegistration, openRegister, openCancel, openLookup, runScheduledDraws
+  withdrawStudent, restoreStudent, setStudentPaid, setStudentRefunded, selfCancelRegistration, openRegister, openCancel, openLookup, runScheduledDraws, listOrganizedActivities, paymentSlips
 } from './activities.js';
 
 export default {
@@ -79,6 +79,8 @@ const ROUTES = [
   ['POST', new RegExp(`^/api/admin/registrations/${ID}/students/${SID}/refund$`), adminStudentRefund],
   ['GET', /^\/api\/admin\/settings$/, adminGetSettings],
   ['POST', /^\/api\/admin\/settings$/, adminSetSettings],
+  ['GET', /^\/api\/my\/organized$/, myOrganized],
+  ['GET', new RegExp(`^/api/activities/${ID}/payment-slips$`), activitySlips],
   ['GET', /^\/api\/admin\/allowed-emails$/, adminListAllowed],
   ['POST', /^\/api\/admin\/allowed-emails$/, adminAddAllowed],
   ['POST', /^\/api\/admin\/allowed-emails\/batch$/, adminBatchAllowed],
@@ -197,6 +199,18 @@ async function publicLookup({ request, env }) {
 async function publicCancel({ request, env }) {
   await openCancel(requireDb(env), await readJson(request));
   return json({ ok: true });
+}
+
+// 承辦人：自己承辦的活動（用來列印繳費單）
+async function myOrganized({ request, env }) {
+  const user = await requireUser(request, env);
+  return json({ activities: await listOrganizedActivities(requireDb(env), user.email) });
+}
+
+// 繳費單資料：管理員或該活動承辦人
+async function activitySlips({ request, env, params }) {
+  const user = await requireUser(request, env);
+  return json(await paymentSlips(requireDb(env), user, params[0]));
 }
 
 async function myRegistrations({ request, env }) {

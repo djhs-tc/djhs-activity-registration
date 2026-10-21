@@ -571,3 +571,26 @@ test('frontend: a full waitlist camp stays open for registration and cancellatio
   assert.equal(isFull({ ...base, waitlist: 0 }), true);
   assert.equal(isFull({ ...base, waitlist: 1 }), false);
 });
+
+// ---------- 繳費單 ----------
+test('payment slips: admin or the organizer only; only 正取 participants; free camps refused', async () => {
+  const { call, DB } = setup();
+  const ORG = 'org@st.tc.edu.tw';
+  const id = await openSurvey(call, { fill_mode: 'open', max_students_per_class: 30, min_participants: 0, fee: 300, organizer_email: ORG,
+    pay_due: '2026-11-06', pay_info: '交給導師', section_size: 2, max_sections: 1, overflow_mode: 'waitlist' });
+  for (let seat = 1; seat <= 3; seat++) await call('/api/public/registrations', { body: pub(id, { email: `p${seat}@gmail.com`, seat_no: seat, name: '生' + seat }) });
+  const path = `/api/activities/${id}/payment-slips`;
+  assert.equal((await call(path)).status, 401);
+  assert.equal((await call(path, { as: T1 })).status, 403, 'other teachers cannot');
+  const org = await call(path, { as: ORG });
+  assert.equal(org.status, 200, JSON.stringify(org.data));
+  assert.deepEqual(org.data.students.map(s => s.seat_no), [1, 2], 'waitlisted student 3 is excluded');
+  assert.deepEqual([org.data.activity.fee, org.data.activity.pay_due, org.data.activity.pay_info], [300, '2026-11-06', '交給導師']);
+  assert.equal((await call(path, { as: ADMIN })).status, 200);
+  assert.deepEqual((await call('/api/my/organized', { as: ORG })).data.activities.map(a => a.id), [id]);
+  assert.deepEqual((await call('/api/my/organized', { as: T1 })).data.activities, []);
+  const free = await openSurvey(call, { min_participants: 0, fee: 0 });
+  assert.match((await call(`/api/activities/${free}/payment-slips`, { as: ADMIN })).data.error, /免費/);
+  assert.match((await call('/api/admin/activities', { body: surveyBody({ pay_due: '11/6' }), as: ADMIN })).data.error, /繳費期限/);
+  void DB;
+});

@@ -42,7 +42,10 @@ CREATE TABLE IF NOT EXISTS activities (
  section_size INTEGER NOT NULL DEFAULT 0,
  max_sections INTEGER NOT NULL DEFAULT 0,
  -- 1 = 額滿改候補：超過 max_participants 仍收件，依報名先後排候補，有人取消或不參加時自動遞補（overflow_mode 維持 close）
- waitlist INTEGER NOT NULL DEFAULT 0 CHECK(waitlist IN (0,1))
+ waitlist INTEGER NOT NULL DEFAULT 0 CHECK(waitlist IN (0,1)),
+ -- 繳費單：繳費期限（YYYY-MM-DD，臺灣日期，可空白）與繳費方式說明
+ pay_due TEXT NOT NULL DEFAULT '',
+ pay_info TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS registrations (
  id TEXT PRIMARY KEY,

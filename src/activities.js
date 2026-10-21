@@ -1,6 +1,6 @@
 import { HttpError, taipeiToUtcIso, nowIso } from './http.js';
 
-const ACTIVITY_COLUMNS = 'id, title, speaker, venue, audience, description, starts_at, ends_at, opens_at, deadline_at, priority_quota, lottery_quota, status, lottery_at, kind, max_students_per_class, organizer_name, cancelled_at, cancel_reason, fee, min_participants, max_participants, overflow_mode, fill_mode, login_required, draw_at, section_size, max_sections, waitlist';
+const ACTIVITY_COLUMNS = 'id, title, speaker, venue, audience, description, starts_at, ends_at, opens_at, deadline_at, priority_quota, lottery_quota, status, lottery_at, kind, max_students_per_class, organizer_name, cancelled_at, cancel_reason, fee, min_participants, max_participants, overflow_mode, fill_mode, login_required, draw_at, section_size, max_sections, waitlist, pay_due, pay_info';
 const ACTIVE = "status != 'cancelled'";
 // 班級代碼：年級 7–9 + 班號 01–30，例如 701、815。
 export const CLASS_CODE = /^[789](0[1-9]|[12]\d|30)$/;
@@ -163,6 +163,35 @@ export async function listMyRegistrations(db, email) {
      WHERE r.teacher_email = ?1 ORDER BY s.seat_no`
   ).bind(email).all();
   return attachStudents(results || [], students || []);
+}
+
+// ---------- 繳費單（管理員與承辦人） ----------
+export async function listOrganizedActivities(db, email) {
+  const { results } = await db.prepare(
+    `SELECT ${ACTIVITY_COLUMNS}, ${STUDENT_COUNTS('a')} FROM activities a WHERE organizer_email = ?1 AND status != 'draft' ORDER BY starts_at`
+  ).bind(String(email || '').toLowerCase()).all();
+  return results || [];
+}
+
+export async function paymentSlips(db, user, activityId) {
+  const a = await getActivity(db, activityId);
+  if (!a) throw new HttpError(404, '找不到此活動');
+  if (!user.isAdmin && a.organizer_email !== String(user.email || '').toLowerCase()) throw new HttpError(403, '只有管理員或此活動的承辦人可以列印繳費單');
+  if (a.kind !== 'survey' || !Number(a.fee)) throw new HttpError(409, '此活動免費，不需要繳費單');
+  const lottery = a.overflow_mode === 'lottery' && Number(a.max_participants) > 0;
+  if (lottery && !a.lottery_at) throw new HttpError(409, '此營隊尚未抽籤，抽籤後才能列印繳費單');
+  const { results } = await db.prepare(
+    `SELECT r.class_code, s.seat_no, s.name, s.paid, s.refunded, ${WAITLIST_NO} AS waitlist_no, s.draw_result
+     FROM registration_students s JOIN registrations r ON r.id = s.registration_id
+     WHERE r.activity_id = ?1 AND r.status != 'cancelled' AND s.status = 'active' ORDER BY r.class_code, s.seat_no`
+  ).bind(activityId).all();
+  const students = (results || []).filter(x => !x.waitlist_no && (!lottery || x.draw_result === 'selected'))
+    .map(x => ({ class_code: x.class_code, seat_no: x.seat_no, name: x.name, paid: Boolean(x.paid && !x.refunded) }));
+  return {
+    activity: { id: a.id, title: a.title, starts_at: a.starts_at, ends_at: a.ends_at, venue: a.venue, fee: Number(a.fee),
+      pay_due: a.pay_due || '', pay_info: a.pay_info || '', organizer_name: a.organizer_name },
+    students
+  };
 }
 
 function attachStudents(regs, students) {
@@ -383,7 +412,9 @@ export function validateActivity(body) {
     waitlist: survey && body.overflow_mode === 'waitlist' ? 1 : 0,
     fill_mode: survey && ['student', 'open'].includes(body.fill_mode) ? 'student' : 'teacher',
     login_required: survey && body.fill_mode === 'open' ? 0 : 1,
-    organizer_name: text('organizer_name', 30, true), organizer_email: organizerEmail(body.organizer_email)
+    organizer_name: text('organizer_name', 30, true), organizer_email: organizerEmail(body.organizer_email),
+    // 繳費單用：繳費期限（YYYY-MM-DD，臺灣日期，可空白）與繳費方式說明
+    pay_due: survey ? payDue(body.pay_due) : '', pay_info: survey ? text('pay_info', 200) : ''
   };
   if (a.ends_at <= a.starts_at) throw new HttpError(400, '活動結束時間必須晚於開始時間');
   if (a.deadline_at <= a.opens_at) throw new HttpError(400, '報名截止時間必須晚於開放報名時間');
@@ -401,6 +432,11 @@ export function validateActivity(body) {
   if (a.draw_at && a.draw_at > a.starts_at) throw new HttpError(400, '自動抽籤時間不可晚於活動開始時間');
   return a;
 }
+function payDue(v) {
+  const d = String(v || '').trim();
+  if (d && !/^\d{4}-\d{2}-\d{2}$/.test(d)) throw new HttpError(400, '繳費期限的日期格式錯誤');
+  return d;
+}
 function organizerEmail(v) {
   const email = String(v || '').trim().toLowerCase();
   if (!/^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$/.test(email) || email.length > 100) throw new HttpError(400, '請填寫正確的承辦人信箱');
@@ -409,16 +445,16 @@ function organizerEmail(v) {
 const LABELS = {
   title: '活動名稱', speaker: '講師', venue: '地點', audience: '參加對象', description: '活動說明',
   starts: '活動開始', ends: '活動結束', opens: '開放報名', deadline: '報名截止',
-  priority_quota: '優先錄取名額', lottery_quota: '抽籤名額', organizer_name: '承辦人姓名', fee: '費用', draw: '自動抽籤', min_participants: '最低開班人數', max_participants: '人數上限'
+  priority_quota: '優先錄取名額', lottery_quota: '抽籤名額', organizer_name: '承辦人姓名', fee: '費用', draw: '自動抽籤', pay_info: '繳費方式說明', min_participants: '最低開班人數', max_participants: '人數上限'
 };
 
 export async function createActivity(db, admin, a) {
   const id = crypto.randomUUID();
   await db.batch([
     db.prepare(
-      `INSERT INTO activities (id, title, speaker, venue, audience, description, starts_at, ends_at, opens_at, deadline_at, priority_quota, lottery_quota, status, created_by, kind, max_students_per_class, organizer_name, organizer_email, fee, min_participants, max_participants, overflow_mode, fill_mode, login_required, draw_at, section_size, max_sections, waitlist)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'draft', ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)`
-    ).bind(id, a.title, a.speaker, a.venue, a.audience, a.description, a.starts_at, a.ends_at, a.opens_at, a.deadline_at, a.priority_quota, a.lottery_quota, admin.email, a.kind, a.max_students_per_class, a.organizer_name, a.organizer_email, a.fee, a.min_participants, a.max_participants, a.overflow_mode, a.fill_mode, a.login_required, a.draw_at, a.section_size, a.max_sections, a.waitlist),
+      `INSERT INTO activities (id, title, speaker, venue, audience, description, starts_at, ends_at, opens_at, deadline_at, priority_quota, lottery_quota, status, created_by, kind, max_students_per_class, organizer_name, organizer_email, fee, min_participants, max_participants, overflow_mode, fill_mode, login_required, draw_at, section_size, max_sections, waitlist, pay_due, pay_info)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'draft', ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29)`
+    ).bind(id, a.title, a.speaker, a.venue, a.audience, a.description, a.starts_at, a.ends_at, a.opens_at, a.deadline_at, a.priority_quota, a.lottery_quota, admin.email, a.kind, a.max_students_per_class, a.organizer_name, a.organizer_email, a.fee, a.min_participants, a.max_participants, a.overflow_mode, a.fill_mode, a.login_required, a.draw_at, a.section_size, a.max_sections, a.waitlist, a.pay_due, a.pay_info),
     audit(db, admin.email, 'activity_create', id, a)
   ]);
   return getActivity(db, id);
@@ -444,9 +480,9 @@ export async function updateActivity(db, admin, id, a, base) {
   }
   const [res] = await db.batch([
     db.prepare(
-      `UPDATE activities SET title=?2, speaker=?3, venue=?4, audience=?5, description=?6, starts_at=?7, ends_at=?8, opens_at=?9, deadline_at=?10, priority_quota=?11, lottery_quota=?12, max_students_per_class=?13, organizer_name=?14, organizer_email=?15, fee=?16, min_participants=?17, max_participants=?18, overflow_mode=?19, fill_mode=?20, login_required=?21, draw_at=?22, section_size=?23, max_sections=?24, waitlist=?25
+      `UPDATE activities SET title=?2, speaker=?3, venue=?4, audience=?5, description=?6, starts_at=?7, ends_at=?8, opens_at=?9, deadline_at=?10, priority_quota=?11, lottery_quota=?12, max_students_per_class=?13, organizer_name=?14, organizer_email=?15, fee=?16, min_participants=?17, max_participants=?18, overflow_mode=?19, fill_mode=?20, login_required=?21, draw_at=?22, section_size=?23, max_sections=?24, waitlist=?25, pay_due=?26, pay_info=?27
        WHERE id = ?1 AND status IN ('draft','open','closed') AND lottery_at IS NULL`
-    ).bind(id, a.title, a.speaker, a.venue, a.audience, a.description, a.starts_at, a.ends_at, a.opens_at, a.deadline_at, a.priority_quota, a.lottery_quota, a.max_students_per_class, a.organizer_name, a.organizer_email, a.fee, a.min_participants, a.max_participants, a.overflow_mode, a.fill_mode, a.login_required, a.draw_at, a.section_size, a.max_sections, a.waitlist),
+    ).bind(id, a.title, a.speaker, a.venue, a.audience, a.description, a.starts_at, a.ends_at, a.opens_at, a.deadline_at, a.priority_quota, a.lottery_quota, a.max_students_per_class, a.organizer_name, a.organizer_email, a.fee, a.min_participants, a.max_participants, a.overflow_mode, a.fill_mode, a.login_required, a.draw_at, a.section_size, a.max_sections, a.waitlist, a.pay_due, a.pay_info),
     db.prepare(
       `INSERT INTO audit_logs (actor_email, action, activity_id, details_json) SELECT ?1, 'activity_update', ?2, ?3 WHERE changes() = 1`
     ).bind(admin.email, id, JSON.stringify({ before: pick(before), after: a })),
@@ -456,7 +492,7 @@ export async function updateActivity(db, admin, id, a, base) {
   return getActivity(db, id);
 }
 const EDITABLE = ['draft', 'open', 'closed'];
-const pick = r => Object.fromEntries(['title', 'speaker', 'venue', 'audience', 'description', 'starts_at', 'ends_at', 'opens_at', 'deadline_at', 'priority_quota', 'lottery_quota', 'kind', 'max_students_per_class', 'organizer_name', 'organizer_email', 'fee', 'min_participants', 'max_participants', 'overflow_mode', 'fill_mode', 'login_required', 'draw_at', 'section_size', 'max_sections', 'waitlist'].map(k => [k, r[k]]));
+const pick = r => Object.fromEntries(['title', 'speaker', 'venue', 'audience', 'description', 'starts_at', 'ends_at', 'opens_at', 'deadline_at', 'priority_quota', 'lottery_quota', 'kind', 'max_students_per_class', 'organizer_name', 'organizer_email', 'fee', 'min_participants', 'max_participants', 'overflow_mode', 'fill_mode', 'login_required', 'draw_at', 'section_size', 'max_sections', 'waitlist', 'pay_due', 'pay_info'].map(k => [k, r[k]]));
 
 // 抽籤前的單一規則：有效報名（priority + lottery_pool）依送出時間排序，前 N 班為 priority，其餘為 lottery_pool。
 // 回傳兩個敘述，放進同一個 batch（交易）：先記錄將變動的班級，再更新狀態。

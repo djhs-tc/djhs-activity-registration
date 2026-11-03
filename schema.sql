@@ -45,7 +45,9 @@ CREATE TABLE IF NOT EXISTS activities (
  waitlist INTEGER NOT NULL DEFAULT 0 CHECK(waitlist IN (0,1)),
  -- 繳費單：繳費期限（YYYY-MM-DD，臺灣日期，可空白）與繳費方式說明
  pay_due TEXT NOT NULL DEFAULT '',
- pay_info TEXT NOT NULL DEFAULT ''
+ pay_info TEXT NOT NULL DEFAULT '',
+ -- 開放年級：'' = 不限；否則為年級數字組成的字串，例如 '89'
+ allowed_grades TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS registrations (
  id TEXT PRIMARY KEY,
@@ -64,7 +66,9 @@ CREATE TABLE IF NOT EXISTS registrations (
  verified INTEGER NOT NULL DEFAULT 1 CHECK(verified IN (0,1)),
  cancel_hash TEXT,
  -- 抽籤後依抽籤序遞補錄取的時間（講座以班為單位）
- backfilled_at TEXT
+ backfilled_at TEXT,
+ -- 抽籤後補報名（先到先得）的報名時間
+ supplement_at TEXT
 );
 -- 導師填寫：同一活動同一班級只能有一筆「未取消」的報名；取消後可重新報名。
 -- 學生填寫：一人一筆，由程式檢查同班同座號、同帳號不重複。

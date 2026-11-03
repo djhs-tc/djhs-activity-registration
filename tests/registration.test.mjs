@@ -444,3 +444,62 @@ test('worker exposes a scheduled handler', async () => {
   await worker.scheduled({}, { DB: createD1() }, { waitUntil: p => waits.push(p) });
   assert.deepEqual(await waits[0], []);
 });
+
+// ---------- 開放年級與補報名 ----------
+test('allowed grades: normalized, enforced at registration; all grades means no limit', async () => {
+  assert.equal(validateActivity(editBody()).allowed_grades, '');
+  assert.equal(validateActivity(editBody({ allowed_grades: '98' })).allowed_grades, '89');
+  assert.equal(validateActivity(editBody({ allowed_grades: '789' })).allowed_grades, '');
+  assert.throws(() => validateActivity(editBody({ allowed_grades: '' })), /至少選擇/);
+  assert.throws(() => validateActivity(editBody({ allowed_grades: '6' })), /年級/);
+  const { DB } = await seeded(2, 0);
+  DB.raw.prepare(`UPDATE activities SET allowed_grades = '89'`).run();
+  const r = c => register(DB, { email: teacher(1) }, { activityId: 'A', classCode: c, teacherName: 'n', accompany: 'no', notes: '' }, '2026-10-20T00:00:00.000Z');
+  await assert.rejects(r('701'), /僅開放八、九年級/);
+  assert.equal((await r('801')).status, 'priority');
+});
+
+test('supplement after the lottery: first come, grades limited, stops at total quota, no redraw', async () => {
+  const { openSupplement } = await import('../src/activities.js');
+  const { DB, idOf } = await seeded(2, 3);
+  const body = { deadline_date: '2026-11-10', deadline_time: '12:00', allowed_grades: '89', audience: '八、九年級' };
+  const now = '2026-11-08T00:00:00.000Z';
+  await assert.rejects(openSupplement(DB, admin, 'A', body, now), /尚未抽籤/);
+  await drawLottery(DB, admin, 'A', '2026-11-07T00:00:00.000Z', new Uint8Array(32).fill(1));
+  await assert.rejects(openSupplement(DB, admin, 'A', body, now), /沒有空出的名額/);
+  await cancelRegistration(DB, admin, 'A', idOf('701'), '撞期');
+  await cancelRegistration(DB, admin, 'A', idOf('702'), '撞期');
+  await assert.rejects(openSupplement(DB, admin, 'A', { ...body, deadline_date: '2026-11-07' }, now), /晚於現在/);
+  await assert.rejects(openSupplement(DB, admin, 'A', { ...body, deadline_date: '2026-11-13' }, now), /不可晚於活動開始/);
+  await assert.rejects(openSupplement(DB, admin, 'A', { ...body, allowed_grades: '' }, now), /至少選擇/);
+  const a = await openSupplement(DB, admin, 'A', body, now);
+  assert.deepEqual([a.status, a.deadline_at, a.allowed_grades, a.audience], ['open', '2026-11-10T04:00:00.000Z', '89', '八、九年級']);
+  const r = c => register(DB, { email: teacher(1) }, { activityId: 'A', classCode: c, teacherName: 'n', accompany: 'no', notes: '' }, '2026-11-08T01:00:00.000Z');
+  await assert.rejects(r('702'), /僅開放八、九年級/);
+  assert.equal((await r('801')).status, 'selected');
+  await assert.rejects(r('801'), /已經報名/);
+  assert.equal((await r('901')).status, 'selected');
+  await assert.rejects(r('902'), /名額已滿/);
+  const rows = await listRegistrations(DB, 'A');
+  assert.equal(rows.find(x => x.class_code === '703').supplement_at, null, 'existing winner unchanged');
+  assert.ok(rows.find(x => x.class_code === '801').supplement_at);
+  assert.match(toCsv(rows), /801.*補報名錄取/);
+  await assert.rejects(drawLottery(DB, admin, 'A', '2026-11-11T00:00:00.000Z'), /已經抽過籤/);
+  assert.equal(DB.raw.prepare(`SELECT COUNT(*) n FROM audit_logs WHERE action = 'supplement_open'`).get().n, 1);
+  // 有人取消就空出名額
+  await cancelRegistration(DB, admin, 'A', idOf('801'), 'x');
+  assert.equal((await r('902')).status, 'selected');
+  // 截止後不能再報
+  await assert.rejects(register(DB, { email: teacher(2) }, { activityId: 'A', classCode: '903', teacherName: 'n', accompany: 'no', notes: '' }, '2026-11-10T04:00:00.000Z'), /截止/);
+});
+
+test('supplement waits for not-selected classes and is admin only', async () => {
+  const { openSupplement } = await import('../src/activities.js');
+  const { DB, idOf } = await seeded(1, 4);
+  await drawLottery(DB, admin, 'A', '2026-11-07T00:00:00.000Z', new Uint8Array(32).fill(1));
+  await cancelRegistration(DB, admin, 'A', idOf('701'), 'x');
+  await assert.rejects(openSupplement(DB, admin, 'A', { deadline_date: '2026-11-10', deadline_time: '12:00', allowed_grades: '89' }, '2026-11-08T00:00:00.000Z'), /等待遞補/);
+  const { call } = setup();
+  const id = await openActivity(call);
+  assert.equal((await call(`/api/admin/activities/${id}/supplement`, { method: "POST", body: {}, as: teacher(1) })).status, 403);
+});

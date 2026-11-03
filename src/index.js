@@ -9,7 +9,7 @@ import {
   listPublicActivities, validateRegistration, register, listMyRegistrations,
   validateActivity, createActivity, updateActivity, setActivityStatus, getActivity, listAdminActivities,
   listRegistrations, cancelRegistration, drawLottery, toCsv, toStudentsCsv, toIcs, cancelActivity, deleteActivity, backfillNext,
-  withdrawStudent, restoreStudent, setStudentPaid, setStudentRefunded, selfCancelRegistration, openRegister, openCancel, openLookup, runScheduledDraws, listOrganizedActivities, paymentSlips
+  withdrawStudent, restoreStudent, setStudentPaid, setStudentRefunded, selfCancelRegistration, openRegister, openCancel, openLookup, runScheduledDraws, listOrganizedActivities, paymentSlips, openSupplement
 } from './activities.js';
 
 export default {
@@ -73,6 +73,7 @@ const ROUTES = [
   ['POST', new RegExp(`^/api/admin/activities/${ID}/registrations/${ID}/cancel$`), adminCancelRegistration],
   ['POST', new RegExp(`^/api/admin/activities/${ID}/draw$`), adminDraw],
   ['POST', new RegExp(`^/api/admin/activities/${ID}/backfill$`), adminBackfill],
+  ['POST', new RegExp(`^/api/admin/activities/${ID}/supplement$`), adminSupplement],
   ['GET', new RegExp(`^/api/admin/activities/${ID}/calendar\\.ics$`), adminCalendar],
   ['POST', new RegExp(`^/api/admin/registrations/${ID}/students/${SID}/restore$`), adminStudentRestore],
   ['POST', new RegExp(`^/api/admin/registrations/${ID}/students/${SID}/paid$`), adminStudentPaid],
@@ -257,6 +258,11 @@ async function adminSetStatus({ request, env, params }) {
   const admin = await requireAdmin(request, env);
   const { status } = await readJson(request);
   return json({ activity: await setActivityStatus(requireDb(env), admin, params[0], String(status || '')) });
+}
+
+async function adminSupplement({ request, env, params }) {
+  const admin = await requireAdmin(request, env);
+  return json({ activity: await openSupplement(requireDb(env), admin, params[0], await readJson(request)) });
 }
 
 async function adminBackfill({ request, env, params }) {

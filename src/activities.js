@@ -490,7 +490,12 @@ export async function updateActivity(db, admin, id, a, base) {
     if (changed) throw new HttpError(409, '此活動在您開啟編輯畫面後已被修改（可能是其他管理員或其他分頁）。請重新整理頁面後再編輯，以免覆蓋最新資料。');
   }
   if (before.cancelled_at) throw new HttpError(409, '已取消的活動不可修改');
-  if (before.lottery_at || !EDITABLE.includes(before.status)) throw new HttpError(409, '已抽籤或已封存的活動不可修改');
+  if (before.status === 'archived') throw new HttpError(409, '已封存的活動不可修改');
+  // 抽籤後只能改活動資訊；名額、報名時間與填寫方式已用於公布結果（補報名的截止時間與年級請到「抽籤作業」設定）
+  if (before.lottery_at) {
+    const changed = LOCKED_AFTER_DRAW.filter(k => String(a[k] ?? '') !== String(before[k] ?? ''));
+    if (changed.length) throw new HttpError(409, '抽籤後不可修改名額、報名時間與填寫方式；可修改名稱、講師、地點、參加對象、說明、活動時間、承辦人與繳費說明');
+  }
   // 活動類型建立後不可變更（講座與意願調查的報名資料結構不同）
   if (a.kind !== before.kind) throw new HttpError(409, '活動類型建立後不可變更');
   if ((a.fill_mode !== before.fill_mode || Number(a.login_required) !== Number(before.login_required)) && (await db.prepare('SELECT 1 AS x FROM registrations WHERE activity_id = ?1 LIMIT 1').bind(id).first())) {
@@ -499,17 +504,17 @@ export async function updateActivity(db, admin, id, a, base) {
   const [res] = await db.batch([
     db.prepare(
       `UPDATE activities SET title=?2, speaker=?3, venue=?4, audience=?5, description=?6, starts_at=?7, ends_at=?8, opens_at=?9, deadline_at=?10, priority_quota=?11, lottery_quota=?12, max_students_per_class=?13, organizer_name=?14, organizer_email=?15, fee=?16, min_participants=?17, max_participants=?18, overflow_mode=?19, fill_mode=?20, login_required=?21, draw_at=?22, section_size=?23, max_sections=?24, waitlist=?25, pay_due=?26, pay_info=?27, allowed_grades=?28
-       WHERE id = ?1 AND status IN ('draft','open','closed') AND lottery_at IS NULL`
-    ).bind(id, a.title, a.speaker, a.venue, a.audience, a.description, a.starts_at, a.ends_at, a.opens_at, a.deadline_at, a.priority_quota, a.lottery_quota, a.max_students_per_class, a.organizer_name, a.organizer_email, a.fee, a.min_participants, a.max_participants, a.overflow_mode, a.fill_mode, a.login_required, a.draw_at, a.section_size, a.max_sections, a.waitlist, a.pay_due, a.pay_info, a.allowed_grades),
+       WHERE id = ?1 AND status IN ('draft','open','closed','drawn') AND lottery_at IS ?29`
+    ).bind(id, a.title, a.speaker, a.venue, a.audience, a.description, a.starts_at, a.ends_at, a.opens_at, a.deadline_at, a.priority_quota, a.lottery_quota, a.max_students_per_class, a.organizer_name, a.organizer_email, a.fee, a.min_participants, a.max_participants, a.overflow_mode, a.fill_mode, a.login_required, a.draw_at, a.section_size, a.max_sections, a.waitlist, a.pay_due, a.pay_info, a.allowed_grades, before.lottery_at),
     db.prepare(
       `INSERT INTO audit_logs (actor_email, action, activity_id, details_json) SELECT ?1, 'activity_update', ?2, ?3 WHERE changes() = 1`
     ).bind(admin.email, id, JSON.stringify({ before: pick(before), after: a })),
     ...recomputePriority(db, id, admin.email, 'activity_update')
   ]);
-  if (!res.meta.changes) throw new HttpError(409, '已抽籤或已封存的活動不可修改');
+  if (!res.meta.changes) throw new HttpError(409, '活動狀態已變更，請重新整理後再修改');
   return getActivity(db, id);
 }
-const EDITABLE = ['draft', 'open', 'closed'];
+const LOCKED_AFTER_DRAW = ['opens_at', 'deadline_at', 'priority_quota', 'lottery_quota', 'max_students_per_class', 'fee', 'min_participants', 'max_participants', 'section_size', 'max_sections', 'overflow_mode', 'waitlist', 'fill_mode', 'login_required', 'draw_at', 'allowed_grades'];
 const pick = r => Object.fromEntries(['title', 'speaker', 'venue', 'audience', 'description', 'starts_at', 'ends_at', 'opens_at', 'deadline_at', 'priority_quota', 'lottery_quota', 'kind', 'max_students_per_class', 'organizer_name', 'organizer_email', 'fee', 'min_participants', 'max_participants', 'overflow_mode', 'fill_mode', 'login_required', 'draw_at', 'section_size', 'max_sections', 'waitlist', 'pay_due', 'pay_info', 'allowed_grades'].map(k => [k, r[k]]));
 
 // 抽籤前的單一規則：有效報名（priority + lottery_pool）依送出時間排序，前 N 班為 priority，其餘為 lottery_pool。

@@ -44,7 +44,7 @@ GitHub main 推送 ──► Cloudflare Workers Builds（deploy command: npx wra
 | POST | `/api/registrations` | 登入 | 班級報名 `{activity_id, class_code, teacher_name, accompany: yes/no, notes, students?}`（意願調查須附學生名單） |
 | GET | `/api/my/registrations` | 登入 | 自己送出的報名與結果 |
 | GET / POST | `/api/admin/activities` | 管理員 | 列出全部活動（含各狀態班數）／建立活動（草稿） |
-| PUT | `/api/admin/activities/:id` | 管理員 | 修改活動（抽籤前皆可；修改後依報名順序重新計算優先錄取） |
+| PUT | `/api/admin/activities/:id` | 管理員 | 修改活動（抽籤後只能改名稱、講師、地點、參加對象、說明、活動時間、承辦人與繳費說明，其餘欄位鎖定；抽籤前皆可；修改後依報名順序重新計算優先錄取） |
 | POST | `/api/admin/activities/:id/status` | 管理員 | 狀態轉換：草稿→開放、開放→關閉、關閉→開放、草稿／關閉／已抽籤→封存 |
 | POST | `/api/admin/activities/:id/cancel` | 管理員 | 臨時取消活動 `{reason}`：停止報名、保留報名資料、公開顯示原因；不可復原 |
 | POST | `/api/admin/activities/:id/delete` | 管理員 | 刪除活動：僅限從未有任何報名紀錄者，內容存入稽核紀錄 |
@@ -66,7 +66,7 @@ GitHub main 推送 ──► Cloudflare Workers Builds（deploy command: npx wra
 所有 POST／PUT 必須同源（`Origin` 檢查）且為 `application/json`，否則回 403／415。所有時間以 UTC ISO 字串儲存，畫面與輸入一律為臺灣時間（UTC+8）。
 
 ### 報名與抽籤規則
-- 活動建立後為**草稿**；管理員按「開放報名」後，教師才能在「開放報名」到「報名截止」之間報名（以伺服器時間為準）。**抽籤前**（含開放後）活動內容、時間與名額都可以修改；抽籤後鎖定。
+- 活動建立後為**草稿**；管理員按「開放報名」後，教師才能在「開放報名」到「報名截止」之間報名（以伺服器時間為準）。**抽籤前**（含開放後）活動內容、時間與名額都可以修改；抽籤後只能修改活動資訊，名額與報名時間鎖定。
 - 班級代碼為年級 7–9 加班號 01–30（如 `701`）；同一活動同一班級只能有**一筆未取消**的報名（部分唯一索引 `uq_reg_active_class`）。
 - **優先錄取**：報名寫入時以單一 SQL 敘述（`INSERT … SELECT`，D1 對同一資料庫序列化寫入）計算目前有效報名數，未滿優先名額即為 `priority`，否則為 `lottery_pool`。同時送出也不會超額。
 - **抽籤**：報名截止時間已到，或管理員已提前「關閉報名」後，由管理員執行一次。產生 32 bytes 隨機種子，候選班級依 `HMAC-SHA256(種子, 報名 id)` 由小到大排序，取前 N 班為 `selected`，其餘 `not_selected`。種子、候選名單、排序鍵與結果寫入 `audit_logs`，可重算驗證；重複執行（含同時按兩次）只有一次會成功。
@@ -162,7 +162,7 @@ npx wrangler dev --local
 
 ## 上線前測試清單
 
-- [x] `npm test` 全部通過（89 項）
+- [x] `npm test` 全部通過（90 項）
 - [x] 本機 `wrangler dev` 端到端：草稿不可報名、優先名額、重複報名、取消、截止前不可抽籤、截止後不可報名、同時抽籤僅一次成功、稽核紀錄筆數正確
 - [x] `@st.tc.edu.tw`、`@tjjh.tc.edu.tw` 帳號可登入；個人 Gmail 被拒絕；`audit_logs` 有 login 紀錄
 - [ ] `scripts/verify-live.sh` 全部 PASS（每次部署後）
@@ -176,5 +176,5 @@ npx wrangler dev --local
 ## 安全注意事項
 - 儲存庫是**公開**的：不提交 client secret、session secret、token、資料庫匯出或教師個資。
 - 所有寫入 API 都在後端驗證 session；管理 API 另驗證 `ADMIN_EMAILS`。
-- 取消可遞補、可重新報名；抽籤後鎖定活動時間與名額（見「報名與抽籤規則」）。
+- 取消可遞補、可重新報名；抽籤後鎖定名額與報名時間（活動資訊仍可修改）（見「報名與抽籤規則」）。
 - 舊 Google 試算表資料未與 D1 同步，勿刪除。

@@ -503,3 +503,19 @@ test('supplement waits for not-selected classes and is admin only', async () => 
   const id = await openActivity(call);
   assert.equal((await call(`/api/admin/activities/${id}/supplement`, { method: "POST", body: {}, as: teacher(1) })).status, 403);
 });
+
+test('after the lottery: information can be edited, locked fields cannot; archived stays locked', async () => {
+  const { DB } = await seeded(2, 4);
+  await drawLottery(DB, admin, 'A', '2026-11-07T00:00:00.000Z', new Uint8Array(32).fill(1));
+  const before = DB.raw.prepare(`SELECT status, lottery_at FROM activities WHERE id='A'`).get();
+  const statuses = () => DB.raw.prepare(`SELECT class_code, status FROM registrations ORDER BY class_code`).all().map(r => r.status).join();
+  const was = statuses();
+  const a = await updateActivity(DB, admin, 'A', validateActivity(editBody({ audience: '八、九年級學生，以班級為單位報名', venue: '禮堂', description: '新說明' })));
+  assert.deepEqual([a.audience, a.venue, a.description], ['八、九年級學生，以班級為單位報名', '禮堂', '新說明']);
+  assert.deepEqual([a.status, a.lottery_at], [before.status, before.lottery_at], 'still drawn');
+  assert.equal(statuses(), was, 'results untouched');
+  await assert.rejects(updateActivity(DB, admin, 'A', validateActivity(editBody({ deadline_date: '2026-11-07' }))), /不可修改/);
+  await assert.rejects(updateActivity(DB, admin, 'A', validateActivity(editBody({ allowed_grades: '89' }))), /不可修改/);
+  DB.raw.prepare(`UPDATE activities SET status='archived' WHERE id='A'`).run();
+  await assert.rejects(updateActivity(DB, admin, 'A', validateActivity(editBody())), /已封存/);
+});
